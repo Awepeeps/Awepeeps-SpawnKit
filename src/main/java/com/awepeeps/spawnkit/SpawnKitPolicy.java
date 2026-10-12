@@ -8,6 +8,9 @@ final class SpawnKitPolicy {
   static final int MAX_SEARCH_RADIUS = 64;
   static final int MAX_VERTICAL_SEARCH = 16;
   static final int MAX_SHELTER_TERRAIN_VARIATION = 2;
+  static final int MIN_SHELTER_SEARCH_RADIUS = 8;
+  static final int DEFAULT_SHELTER_SEARCH_RADIUS = 16;
+  static final int MAX_SHELTER_SEARCH_RADIUS = 32;
 
   private SpawnKitPolicy() {}
 
@@ -46,6 +49,10 @@ final class SpawnKitPolicy {
   static boolean canLevelShelterTerrain(int lowestSurfaceY, int highestSurfaceY) {
     return highestSurfaceY >= lowestSurfaceY
         && highestSurfaceY - lowestSurfaceY <= MAX_SHELTER_TERRAIN_VARIATION;
+  }
+
+  static boolean validShelterSearchRadius(int radius) {
+    return radius >= MIN_SHELTER_SEARCH_RADIUS && radius <= MAX_SHELTER_SEARCH_RADIUS;
   }
 
   static boolean safeFloor(boolean solid, boolean liquid, boolean leaves, boolean hazardous) {

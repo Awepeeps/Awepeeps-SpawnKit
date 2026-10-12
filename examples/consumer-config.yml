@@ -4,6 +4,7 @@ spawn-kit:
   starts-on: "2026-01-01"
   expires-on: "2026-12-31"
   timezone: "UTC"
+  search-radius: 16
   spawn-marker:
     enabled: true
     name: "World Spawn"
