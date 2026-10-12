@@ -35,6 +35,7 @@ final class SpawnKitManager {
 
   private final JavaPlugin plugin;
   private final List<SpawnKitContents.Stack> stacks;
+  private final int shelterSearchRadius;
   private final NamespacedKey ownedKey;
   private final SpawnKitShelter shelter;
   private final File storeFile;
@@ -45,11 +46,12 @@ final class SpawnKitManager {
   private final Set<String> incompleteSetupReported = new HashSet<>();
   private boolean invalidConfigLogged;
 
-  SpawnKitManager(JavaPlugin plugin, List<SpawnKitContents.Stack> stacks) {
+  SpawnKitManager(JavaPlugin plugin, List<SpawnKitContents.Stack> stacks, int shelterSearchRadius) {
     this.plugin = plugin;
     this.stacks = stacks;
+    this.shelterSearchRadius = shelterSearchRadius;
     this.ownedKey = new NamespacedKey(plugin, "spawn_kit_chest");
-    this.shelter = new SpawnKitShelter(plugin, ownedKey);
+    this.shelter = new SpawnKitShelter(plugin, ownedKey, shelterSearchRadius);
     this.storeFile = new File(plugin.getDataFolder(), "issued-kits.yml");
     this.store = YamlConfiguration.loadConfiguration(storeFile);
   }
@@ -114,7 +116,8 @@ final class SpawnKitManager {
         saveStore("Could not clear the spawn setup reservation after a safe site was not found.");
         retryAfterNanos.put(worldId, now + TimeUnit.SECONDS.toNanos(30));
         if (now >= nextNoCandidateLogNanos.getOrDefault(worldId, 0L)) {
-          plugin.getLogger().info("Spawn Kit setup deferred: no safe, flat, loaded site was found near world spawn.");
+          plugin.getLogger().info("Spawn Kit setup deferred: no safe, natural, loaded site was found within "
+              + shelterSearchRadius + " blocks of world spawn.");
           nextNoCandidateLogNanos.put(worldId, now + TimeUnit.MINUTES.toNanos(5));
         }
         return;

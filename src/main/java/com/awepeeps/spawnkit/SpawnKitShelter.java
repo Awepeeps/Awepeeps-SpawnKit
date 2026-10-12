@@ -26,7 +26,6 @@ import org.bukkit.plugin.java.JavaPlugin;
 
 final class SpawnKitShelter {
   private static final int HOUSE_RADIUS = 3;
-  private static final int SEARCH_RADIUS = 8;
   private static final Set<Material> NATURAL_FLOORS = Set.of(
       Material.GRASS_BLOCK, Material.DIRT, Material.COARSE_DIRT, Material.ROOTED_DIRT,
       Material.PODZOL, Material.MYCELIUM, Material.MUD, Material.CLAY, Material.SAND,
@@ -39,10 +38,12 @@ final class SpawnKitShelter {
 
   private final JavaPlugin plugin;
   private final NamespacedKey ownedKey;
+  private final int searchRadius;
 
-  SpawnKitShelter(JavaPlugin plugin, NamespacedKey ownedKey) {
+  SpawnKitShelter(JavaPlugin plugin, NamespacedKey ownedKey, int searchRadius) {
     this.plugin = plugin;
     this.ownedKey = ownedKey;
+    this.searchRadius = searchRadius;
   }
 
   Location build(World world, boolean houseEnabled, boolean markerEnabled,
@@ -91,8 +92,8 @@ final class SpawnKitShelter {
   private Site findSite(World world, boolean houseEnabled) {
     Location origin = world.getSpawnLocation();
     List<int[]> offsets = new ArrayList<>();
-    for (int dx = -SEARCH_RADIUS; dx <= SEARCH_RADIUS; dx++) {
-      for (int dz = -SEARCH_RADIUS; dz <= SEARCH_RADIUS; dz++) {
+    for (int dx = -searchRadius; dx <= searchRadius; dx++) {
+      for (int dz = -searchRadius; dz <= searchRadius; dz++) {
         offsets.add(new int[] {dx, dz});
       }
     }

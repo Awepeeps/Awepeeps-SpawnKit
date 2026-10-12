@@ -71,6 +71,15 @@ class SpawnKitPolicyTest {
   }
 
   @Test
+  void shelterSearchRadiusIsBoundedAndConfigurable() {
+    assertFalse(SpawnKitPolicy.validShelterSearchRadius(7));
+    assertTrue(SpawnKitPolicy.validShelterSearchRadius(8));
+    assertTrue(SpawnKitPolicy.validShelterSearchRadius(16));
+    assertTrue(SpawnKitPolicy.validShelterSearchRadius(32));
+    assertFalse(SpawnKitPolicy.validShelterSearchRadius(33));
+  }
+
+  @Test
   void configuredKitItemsAreParsedAndStackAmountsPreserved() {
     SpawnKitContents kit = new SpawnKitContents(List.of(
         Map.of("material", "PAPER", "amount", 99),

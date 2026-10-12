@@ -4,6 +4,7 @@ spawn-kit:
   starts-on: ""
   expires-on: ""
   timezone: ""
+  search-radius: 16
   spawn-marker:
     enabled: false
     name: "World Spawn"
