@@ -1,11 +1,39 @@
-# The consuming server supplies all content and date policy here.
+# Awepeeps Spawn Kit configuration.
+#
+# Two independent parts:
+#   spawn-zone  - the protected spawn area (core + arrival space) and spawn control. Available
+#                 whenever it is enabled, independent of the date window and of the house.
+#   spawn-kit   - the test-only house and starter chest, gated by the date window and `enabled`.
+
+# The protected spawn area. "Protected zone" = the 3x3x3 core (config core-depth) plus the 3x3
+# clear column above it (config clear-height). Nobody but a creative operator can break, replace,
+# move, burn or blow up anything in it, and nobody can place blocks or fluids into the arrival
+# space. Players arrive standing on top of the core.
+spawn-zone:
+  # Build and enforce the protected spawn area, and pin the world spawn onto the core top.
+  enabled: true
+  # Depth of the solid 3x3 core, in blocks (1-8). Default 3.
+  core-depth: 3
+  # Height of the protected clear column above the core, in blocks (2-8). Default 3.
+  clear-height: 3
+  # Walkable/furnishing space between the arrival space and the walls, in blocks (1-2). Default 1.
+  margin: 1
+  # Beds placed in the house (1-4). Extras beyond the layout go in the chest.
+  beds: 1
+  # Chests placed in the house (1-4). Chest contents come from spawn-kit.house.chest.items.
+  chests: 1
+  # Pin the respawn_radius game rule to 0 so joins and bed-less respawns land on the core top.
+  # The original value is recorded and restored when this is disabled. Bed and respawn-anchor
+  # spawns are never overridden.
+  manage-spawn-radius: true
+
+# The test-only house and starter kit. Nothing is issued by default: enable it, set a date window
+# and timezone, and provide valid items that fit in one chest.
 spawn-kit:
   enabled: false
   starts-on: ""
   expires-on: ""
   timezone: ""
-  # Maximum horizontal site-search radius around the existing world spawn (8-32).
-  search-radius: 16
   spawn-marker:
     enabled: false
     name: "World Spawn"
