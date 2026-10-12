@@ -71,6 +71,40 @@ class SpawnKitPolicyTest {
   }
 
   @Test
+  void shelterAcceptsNaturalSnowAndVegetationCoverWithoutReplacingStructures() {
+    assertTrue(SpawnKitPolicy.isNaturalFloor(Material.GRASS_BLOCK));
+    assertTrue(SpawnKitPolicy.isNaturalFloor(Material.STONE));
+    assertFalse(SpawnKitPolicy.isNaturalFloor(Material.OAK_PLANKS));
+    assertTrue(SpawnKitPolicy.isClearableVegetation(Material.SNOW));
+    assertTrue(SpawnKitPolicy.isClearableVegetation(Material.SHORT_GRASS));
+    assertTrue(SpawnKitPolicy.isClearableVegetation(Material.POPPY));
+    assertFalse(SpawnKitPolicy.isClearableVegetation(Material.OAK_LEAVES));
+    assertFalse(SpawnKitPolicy.isClearableVegetation(Material.OAK_PLANKS));
+    assertFalse(SpawnKitPolicy.isClearableVegetation(Material.CHEST));
+  }
+
+  @Test
+  void shelterChestMustBeOutsideTheConfiguredProtectionSquare() {
+    assertFalse(SpawnKitPolicy.outsideProtection(-1, 0, 16));
+    assertFalse(SpawnKitPolicy.outsideProtection(-16, 16, 16));
+    assertTrue(SpawnKitPolicy.outsideProtection(-17, 0, 16));
+    assertTrue(SpawnKitPolicy.outsideProtection(-16, 17, 16));
+  }
+
+  @Test
+  void asyncSearchLoadsChunksCoveringTheWholeSearchFootprintAndBacksOff() {
+    SpawnKitPolicy.ChunkBounds bounds = SpawnKitPolicy.searchChunkBounds(31, -9, 36);
+    assertEquals(-1, bounds.minX());
+    assertEquals(4, bounds.maxX());
+    assertEquals(-3, bounds.minZ());
+    assertEquals(1, bounds.maxZ());
+    assertEquals(30, SpawnKitPolicy.retryDelaySeconds(0));
+    assertEquals(60, SpawnKitPolicy.retryDelaySeconds(1));
+    assertEquals(120, SpawnKitPolicy.retryDelaySeconds(2));
+    assertEquals(1800, SpawnKitPolicy.retryDelaySeconds(10));
+  }
+
+  @Test
   void shelterSearchRadiusIsBoundedAndConfigurable() {
     assertFalse(SpawnKitPolicy.validShelterSearchRadius(7));
     assertTrue(SpawnKitPolicy.validShelterSearchRadius(8));

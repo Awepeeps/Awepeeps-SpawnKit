@@ -58,8 +58,9 @@ at local midnight on `starts-on` and stops at local midnight after `expires-on`.
 After changing configuration, restart the server. Materials are Bukkit
 `Material` names. Amounts must be positive integers; amounts above an item's
 stack size are split into multiple stacks. All configured items must fit within
-27 chest slots. The marker toggle places a lodestone at the shelter's center
-and publishes a named POI to BlueMap when that optional plugin is installed.
+27 chest slots. The marker toggle places a lodestone at the shelter's center and publishes a
+named POI at the existing world spawn to BlueMap when that optional plugin is
+installed. The marker is retried independently of shelter setup.
 The shelter is a compact, solid-roofed, windowless oak-and-cobblestone house
 with a door, one white bed, and interior/exterior torches. A chest and its
 contents are independently enabled. The plugin includes no server-specific
@@ -69,17 +70,18 @@ example with neutral items and dates that should be replaced for each server.
 
 ## Placement and reset behavior
 
-For a shelter, the plugin searches already-loaded terrain within a bounded
-radius around the primary Overworld spawn (`search-radius`, 8–32 blocks; default
-16). It levels a small natural-ground
-height variation of up to four blocks with a cobblestone foundation, while
-requiring safe ground and clear building space. It does not load chunks or
-overwrite structures. If no safe location is available, it retries later. The
-consuming server should load the relevant spawn terrain before players arrive.
-It should set
-`spawn-protection` to `2` in `server.properties` for a 5-by-5 protected block
-area centered on the resulting spawn point; the plugin does not modify server
-properties.
+For a shelter, the plugin asynchronously loads and temporarily tickets the
+terrain it needs within a bounded radius around the existing primary Overworld
+spawn (`search-radius`, 8–32 blocks; default 16), then releases those tickets
+after setup. It levels natural-ground height variations of up to four blocks
+with a cobblestone foundation and clears only whitelisted surface vegetation
+and snow layers from the building footprint. Solid structures, containers,
+liquids, and unsafe ground are never replaced. The supply chest is placed
+outside the server's configured spawn-protection square so ordinary players
+can access it; the world spawn itself is not moved. If no suitable site is
+available, setup retries with increasing delays and logs candidate/rejection
+counts only when the diagnostic changes. The plugin does not modify
+`server.properties`.
 
 An issuance tombstone is stored per world UUID in
 `plugins/AwepeepsSpawnKit/issued-kits.yml`; the chest also receives an ownership
@@ -98,4 +100,4 @@ bash ./gradlew --no-daemon clean test build
 ```
 
 The reproducible jar is written to
-`build/libs/awepeeps-spawn-kit-1.1.3.jar`.
+`build/libs/awepeeps-spawn-kit-1.1.4.jar`.
