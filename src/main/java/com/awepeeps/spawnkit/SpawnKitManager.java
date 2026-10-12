@@ -9,6 +9,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.TimeUnit;
@@ -30,6 +31,9 @@ import org.bukkit.plugin.java.JavaPlugin;
  */
 final class SpawnKitManager {
   private static final int LAYOUT_VERSION = 2;
+  /** Vanilla's default, used only if the game rule cannot be read at all. */
+  private static final int DEFAULT_RESPAWN_RADIUS = 10;
+  private static final String BLUEMAP_PLUGIN = "BlueMap";
 
   private final JavaPlugin plugin;
   private final List<SpawnKitContents.Stack> stacks;
@@ -44,10 +48,13 @@ final class SpawnKitManager {
   private final Map<String, Integer> retryAttempts = new HashMap<>();
   private final Map<String, String> lastDeferral = new HashMap<>();
   private final Map<String, Long> nextMarkerUpdateNanos = new HashMap<>();
+  private final Map<String, Integer> lastRepairCounts = new HashMap<>();
+  private final Map<UUID, Set<Long>> outstandingTickets = new HashMap<>();
   private final Set<String> pendingSetups = new HashSet<>();
   private final Set<String> upgradeLogged = new HashSet<>();
   private final Set<String> interruptedLogged = new HashSet<>();
   private boolean invalidConfigLogged;
+  private boolean missingBlueMapLogged;
 
   SpawnKitManager(JavaPlugin plugin, SpawnZoneLayout layout, List<SpawnKitContents.Stack> stacks) {
     this.plugin = plugin;
@@ -114,7 +121,9 @@ final class SpawnKitManager {
     if (zoneEnabled()) {
       ensureZone(world);
     } else {
-      restoreSpawnRadius(world);
+      protection.clearRegion(world);
+      spawnControl.clear(world);
+      restoreSpawnRadiusForShutdown();
     }
     if (kitActive) {
       ensureKit(world);
@@ -136,21 +145,21 @@ final class SpawnKitManager {
     String worldPath = "worlds." + world.getUID();
     switch (classify(worldPath)) {
       case CURRENT -> {
-        String worldId = world.getUID().toString();
         applyStoredZone(world, worldPath);
-        if (!pendingSetups.contains(worldId)) {
-          int repaired = repairZone(world, worldPath);
-          if (repaired > 0) {
-            plugin.getLogger().info("Repaired " + repaired
-                + " protected spawn block(s) in world " + world.getName() + ".");
-          }
+        if (!pendingSetups.contains(world.getUID().toString())) {
+          repairZone(world, worldPath);
         }
       }
       case IN_PROGRESS -> {
-        if (interruptedLogged.add(world.getUID().toString())) {
+        // A reservation this instance created is still building; only a reservation left behind by
+        // an earlier run (or a crash) is an interruption worth warning about.
+        if (!pendingSetups.contains(world.getUID().toString())
+            && interruptedLogged.add(world.getUID().toString())) {
           plugin.getLogger().warning(
               "Spawn zone setup was interrupted for world " + world.getName()
-                  + "; refusing to build again until the world/setup record is reviewed.");
+                  + "; it will not be built again automatically. Run '/spawnkit build confirm' in"
+                  + " that world to rebuild the layout, or clear"
+                  + " plugins/AwepeepsSpawnKit/issued-kits.yml after a fresh world reset.");
         }
       }
       case LEGACY_UNMIGRATED -> logUpgrade(world);
@@ -171,11 +180,36 @@ final class SpawnKitManager {
     applySpawnRadius(world, worldPath);
   }
 
-  private int repairZone(World world, String worldPath) {
-    return builder.repairZone(world, layout,
-        store.getInt(worldPath + ".spawn-x"),
-        store.getInt(worldPath + ".spawn-y"),
-        store.getInt(worldPath + ".spawn-z"));
+  /**
+   * Re-seats the core and clears the arrival column, at most once every tick cycle (five seconds).
+   * Skipped while the spawn chunks are not loaded, so this periodic check can never pull chunks back
+   * in on the main thread; nothing is repaired unless the record already says the zone is complete.
+   * The protected core is meant to be a fixed shape, so a creative operator's edit is deliberately
+   * reverted on the next pass (see the README).
+   */
+  private void repairZone(World world, String worldPath) {
+    int sx = store.getInt(worldPath + ".spawn-x");
+    int sy = store.getInt(worldPath + ".spawn-y");
+    int sz = store.getInt(worldPath + ".spawn-z");
+    if (!zoneChunksLoaded(world, sx, sz)) return;
+    int repaired = builder.repairZone(world, layout, sx, sy, sz);
+    String worldId = world.getUID().toString();
+    if (repaired > 0 && lastRepairCounts.getOrDefault(worldId, -1) != repaired) {
+      plugin.getLogger().info("Repaired " + repaired
+          + " protected spawn block(s) in world " + world.getName() + ".");
+    }
+    lastRepairCounts.put(worldId, repaired);
+  }
+
+  private boolean zoneChunksLoaded(World world, int spawnX, int spawnZ) {
+    SpawnKitPolicy.ChunkBounds bounds =
+        SpawnKitPolicy.chunkBounds(spawnX, spawnZ, layout.wallRadius());
+    for (int chunkX = bounds.minX(); chunkX <= bounds.maxX(); chunkX++) {
+      for (int chunkZ = bounds.minZ(); chunkZ <= bounds.maxZ(); chunkZ++) {
+        if (!world.isChunkLoaded(chunkX, chunkZ)) return false;
+      }
+    }
+    return true;
   }
 
   // ---- Test-only house kit ------------------------------------------------------------------
@@ -192,10 +226,7 @@ final class SpawnKitManager {
     if (state != SpawnZonePolicy.SetupState.CURRENT) return; // wait for the protected zone
     String worldId = world.getUID().toString();
     if (pendingSetups.contains(worldId)) return;
-    SpawnRegion core = layout.protectedRegion().translated(
-        store.getInt(worldPath + ".spawn-x"),
-        store.getInt(worldPath + ".spawn-y"),
-        store.getInt(worldPath + ".spawn-z"));
+    SpawnRegion core = recordedZone(world, worldPath);
     beginBuild(world, worldPath, "house", true, chestConfigured(), true, core);
   }
 
@@ -262,10 +293,7 @@ final class SpawnKitManager {
     boolean released = false;
     try {
       for (Chunk chunk : chunks) {
-        if (!world.addPluginChunkTicket(chunk.getX(), chunk.getZ(), plugin)) {
-          throw new IllegalStateException("Could not retain a loaded build chunk.");
-        }
-        ticketed.add(chunk);
+        retainTicket(world, chunk, ticketed);
       }
       SpawnZoneBuilder.Prepared prepared = builder.prepare(world, layout, houseEnabled, chestEnabled,
           supplies ? stacks : List.of(), existingCore);
@@ -298,10 +326,44 @@ final class SpawnKitManager {
     }
   }
 
+  private void retainTicket(World world, Chunk chunk, List<Chunk> ticketed) {
+    if (!world.addPluginChunkTicket(chunk.getX(), chunk.getZ(), plugin)) {
+      throw new IllegalStateException("Could not retain a loaded build chunk.");
+    }
+    ticketed.add(chunk);
+    outstandingTickets.computeIfAbsent(world.getUID(), key -> new HashSet<>())
+        .add(ticketKey(chunk.getX(), chunk.getZ()));
+  }
+
   private void releaseTickets(World world, List<Chunk> ticketed) {
+    Set<Long> keys = outstandingTickets.get(world.getUID());
     for (Chunk chunk : ticketed) {
       world.removePluginChunkTicket(chunk.getX(), chunk.getZ(), plugin);
+      if (keys != null) keys.remove(ticketKey(chunk.getX(), chunk.getZ()));
     }
+    if (keys != null && keys.isEmpty()) {
+      outstandingTickets.remove(world.getUID());
+    }
+  }
+
+  private static long ticketKey(int chunkX, int chunkZ) {
+    return ((long) chunkX << 32) | (chunkZ & 0xFFFFFFFFL);
+  }
+
+  /**
+   * Releases every chunk ticket that is still held (a build interrupted by a plugin disable never
+   * reaches its completion callback) and restores the respawn radius. Runs on the main thread.
+   */
+  void shutdown() {
+    for (Map.Entry<UUID, Set<Long>> entry : outstandingTickets.entrySet()) {
+      World world = Bukkit.getWorld(entry.getKey());
+      if (world == null) continue;
+      for (long key : entry.getValue()) {
+        world.removePluginChunkTicket((int) (key >> 32), (int) key, plugin);
+      }
+    }
+    outstandingTickets.clear();
+    restoreSpawnRadiusForShutdown();
   }
 
   private void completeBuild(World world, String worldPath, String kind,
@@ -358,6 +420,9 @@ final class SpawnKitManager {
     if (world.getEnvironment() != World.Environment.NORMAL) {
       return "The spawn layout is only built in the Overworld.";
     }
+    if (!zoneEnabled()) {
+      return "spawn-zone.enabled is false; nothing was built.";
+    }
     if (pendingSetups.contains(world.getUID().toString())) {
       return "A spawn build is already in progress for this world.";
     }
@@ -365,17 +430,25 @@ final class SpawnKitManager {
       return "Supplies were requested but spawn-kit.house.chest is not configured.";
     }
     String worldPath = "worlds." + world.getUID();
-    SpawnRegion existingCore = null;
-    if (store.getBoolean(worldPath + ".spawn-zone-complete", false)) {
-      existingCore = layout.protectedRegion().translated(
-          store.getInt(worldPath + ".spawn-x"),
-          store.getInt(worldPath + ".spawn-y"),
-          store.getInt(worldPath + ".spawn-z"));
-    }
+    SpawnRegion existingCore = recordedZone(world, worldPath);
     upgradeLogged.remove(world.getUID().toString());
     beginBuild(world, worldPath, "operator", true, chestConfigured(), withSupplies, existingCore);
     return "Spawn layout build started for world " + world.getName()
         + (withSupplies ? " (with supplies)." : " (without supplies).");
+  }
+
+  /**
+   * The protected zone this world's record already knows about, or null. The coordinates are written
+   * before the first block change, so even a build interrupted half way through is recognised and a
+   * later rebuild does not refuse the site for the plugin's own blocks.
+   */
+  private SpawnRegion recordedZone(World world, String worldPath) {
+    if (store.getInt(worldPath + ".layout-version", 0) < LAYOUT_VERSION) return null;
+    if (!store.contains(worldPath + ".spawn-x")) return null;
+    return layout.protectedRegion().translated(
+        store.getInt(worldPath + ".spawn-x"),
+        store.getInt(worldPath + ".spawn-y"),
+        store.getInt(worldPath + ".spawn-z"));
   }
 
   // ---- Spawn radius handling ----------------------------------------------------------------
@@ -385,17 +458,23 @@ final class SpawnKitManager {
       restoreSpawnRadius(world);
       return;
     }
-    if (!store.contains(worldPath + ".original-respawn-radius")) {
+    String key = worldPath + ".original-respawn-radius";
+    if (!store.contains(key)) {
       Integer current = world.getGameRuleValue(GameRules.RESPAWN_RADIUS);
-      store.set(worldPath + ".original-respawn-radius", current == null ? 10 : current);
-      saveStore("Could not record the original respawn radius; it will not be restored later.");
+      store.set(key, current == null ? DEFAULT_RESPAWN_RADIUS : current);
+      if (!saveStore("Could not record the original respawn radius; the rule is left alone.")) {
+        // Never pin the rule without a durable record of the original value: if the write failed
+        // and the server crashed now, the original would be lost and 0 would become permanent.
+        return;
+      }
     }
     world.setGameRule(GameRules.RESPAWN_RADIUS, SpawnZonePolicy.MANAGED_RESPAWN_RADIUS);
   }
 
   private void restoreSpawnRadius(World world) {
     String worldPath = "worlds." + world.getUID();
-    if (!store.contains(worldPath + ".original-respawn-radius")) return;    world.setGameRule(GameRules.RESPAWN_RADIUS,
+    if (!store.contains(worldPath + ".original-respawn-radius")) return;
+    world.setGameRule(GameRules.RESPAWN_RADIUS,
         store.getInt(worldPath + ".original-respawn-radius"));
     store.set(worldPath + ".original-respawn-radius", null);
     saveStore("Could not clear the recorded respawn radius after restoring it.");
@@ -416,6 +495,19 @@ final class SpawnKitManager {
     String worldId = world.getUID().toString();
     long now = System.nanoTime();
     if (now < nextMarkerUpdateNanos.getOrDefault(worldId, 0L)) return;
+    if (!Bukkit.getPluginManager().isPluginEnabled(BLUEMAP_PLUGIN)) {
+      // Checked before the marker class is touched: loading it without BlueMap on the classpath
+      // would throw NoClassDefFoundError from the scheduled task.
+      if (!missingBlueMapLogged) {
+        missingBlueMapLogged = true;
+        plugin.getLogger().warning(
+            "Spawn marker is enabled, but BlueMap is not installed/enabled; the marker will be"
+                + " retried every minute.");
+      }
+      nextMarkerUpdateNanos.put(worldId, now + TimeUnit.MINUTES.toNanos(1));
+      return;
+    }
+    missingBlueMapLogged = false;
     String worldPath = "worlds." + world.getUID();
     Location spawn = store.getBoolean(worldPath + ".spawn-zone-complete", false)
         ? new Location(world, store.getInt(worldPath + ".spawn-x"),

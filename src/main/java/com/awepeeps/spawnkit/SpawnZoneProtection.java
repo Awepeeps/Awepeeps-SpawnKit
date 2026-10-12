@@ -10,6 +10,7 @@ import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.block.BlockState;
+import org.bukkit.block.data.Directional;
 import org.bukkit.entity.Player;
 import org.bukkit.event.Cancellable;
 import org.bukkit.event.EventHandler;
@@ -26,7 +27,6 @@ import org.bukkit.event.block.BlockFromToEvent;
 import org.bukkit.event.block.BlockGrowEvent;
 import org.bukkit.event.block.BlockIgniteEvent;
 import org.bukkit.event.block.BlockMultiPlaceEvent;
-import org.bukkit.event.block.BlockPhysicsEvent;
 import org.bukkit.event.block.BlockPistonExtendEvent;
 import org.bukkit.event.block.BlockPistonRetractEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
@@ -36,13 +36,17 @@ import org.bukkit.event.block.SpongeAbsorbEvent;
 import org.bukkit.event.block.EntityBlockFormEvent;
 import org.bukkit.event.entity.EntityChangeBlockEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
+import org.bukkit.event.entity.EntityPlaceEvent;
+import org.bukkit.event.hanging.HangingPlaceEvent;
 import org.bukkit.event.player.PlayerBucketEmptyEvent;
 import org.bukkit.event.world.StructureGrowEvent;
 
 /**
  * Enforces the protected spawn zone: the solid core and the clear arrival column above it. The
  * protected region is precomputed per world (one box, so every lookup is O(1) and allocation free).
- * The destructible house is intentionally not covered.
+ * The destructible house is intentionally not covered. Every handler is scoped to the recorded
+ * region of its own world, returns immediately when no region is recorded, and never touches the
+ * world other than through the event it is handling.
  */
 final class SpawnZoneProtection implements Listener {
   private final Map<UUID, SpawnRegion> regions = new ConcurrentHashMap<>();
@@ -60,7 +64,7 @@ final class SpawnZoneProtection implements Listener {
   }
 
   boolean isProtected(Block block) {
-    SpawnRegion region = regions.get(block.getWorld().getUID());
+    SpawnRegion region = region(block.getWorld());
     return region != null && region.contains(block.getX(), block.getY(), block.getZ());
   }
 
@@ -73,17 +77,16 @@ final class SpawnZoneProtection implements Listener {
     return false;
   }
 
-  private boolean anyProtected(World world, List<Block> blocks) {
-    SpawnRegion region = regions.get(world.getUID());
-    if (region == null) return false;
-    for (Block block : blocks) {
-      if (region.contains(block.getX(), block.getY(), block.getZ())) return true;
-    }
-    return false;
+  private static SpawnBlockPos position(Block block) {
+    return new SpawnBlockPos(block.getX(), block.getY(), block.getZ());
+  }
+
+  private static SpawnBlockPos position(BlockState state) {
+    return new SpawnBlockPos(state.getX(), state.getY(), state.getZ());
   }
 
   private boolean anyProtectedState(World world, List<BlockState> states) {
-    SpawnRegion region = regions.get(world.getUID());
+    SpawnRegion region = region(world);
     if (region == null) return false;
     for (BlockState state : states) {
       if (region.contains(state.getX(), state.getY(), state.getZ())) return true;
@@ -107,22 +110,38 @@ final class SpawnZoneProtection implements Listener {
         creativeOperator(event.getPlayer()));
   }
 
+  /**
+   * A bed or a door only fires this event (never {@link BlockPlaceEvent}), and only the primary
+   * block is exposed through {@code getBlockPlaced()}. Every placed half is checked, so a bed whose
+   * head lands in the arrival space cannot be placed from outside the zone.
+   */
   @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
   public void onMultiPlace(BlockMultiPlaceEvent event) {
-    deny(event, SpawnZonePolicy.GuardEvent.BLOCK_MULTI_PLACE, event.getBlockPlaced(),
-        creativeOperator(event.getPlayer()));
+    Block primary = event.getBlockPlaced();
+    SpawnRegion region = region(primary.getWorld());
+    if (region == null) return;
+    List<SpawnBlockPos> placed = new ArrayList<>(event.getReplacedBlockStates().size() + 1);
+    placed.add(position(primary));
+    for (BlockState state : event.getReplacedBlockStates()) {
+      placed.add(position(state));
+    }
+    if (SpawnZonePolicy.deniedPlacement(SpawnZonePolicy.GuardEvent.BLOCK_MULTI_PLACE, region,
+        placed, creativeOperator(event.getPlayer()))) {
+      event.setCancelled(true);
+    }
   }
 
   @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
   public void onBucketEmpty(PlayerBucketEmptyEvent event) {
     Block clicked = event.getBlock();
-    boolean creativeOperator = creativeOperator(event.getPlayer());
-    if (deny(event, SpawnZonePolicy.GuardEvent.PLAYER_BUCKET_EMPTY, clicked, creativeOperator)) {
-      return;
-    }
-    if (clicked != null) {
-      deny(event, SpawnZonePolicy.GuardEvent.PLAYER_BUCKET_EMPTY,
-          clicked.getRelative(event.getBlockFace()), creativeOperator);
+    if (clicked == null) return;
+    SpawnRegion region = region(clicked.getWorld());
+    if (region == null) return;
+    List<SpawnBlockPos> affected = List.of(
+        position(clicked), position(clicked.getRelative(event.getBlockFace())));
+    if (SpawnZonePolicy.deniedPlacement(SpawnZonePolicy.GuardEvent.PLAYER_BUCKET_EMPTY, region,
+        affected, creativeOperator(event.getPlayer()))) {
+      event.setCancelled(true);
     }
   }
 
@@ -176,14 +195,25 @@ final class SpawnZoneProtection implements Listener {
     deny(event, SpawnZonePolicy.GuardEvent.BLOCK_IGNITE, event.getBlock(), false);
   }
 
+  /**
+   * A dispenser fires at the block it faces. The event does not expose that block, so the facing
+   * of the dispenser's block data is used: a water bucket or a bone-meal dispense facing into the
+   * arrival space is refused.
+   */
   @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
   public void onDispense(BlockDispenseEvent event) {
-    deny(event, SpawnZonePolicy.GuardEvent.BLOCK_DISPENSE, event.getBlock(), false);
-  }
-
-  @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
-  public void onPhysics(BlockPhysicsEvent event) {
-    deny(event, SpawnZonePolicy.GuardEvent.BLOCK_PHYSICS, event.getBlock(), false);
+    Block dispenser = event.getBlock();
+    if (deny(event, SpawnZonePolicy.GuardEvent.BLOCK_DISPENSE, dispenser, false)) {
+      return;
+    }
+    SpawnRegion region = region(dispenser.getWorld());
+    if (region == null) return;
+    if (!(dispenser.getBlockData() instanceof Directional directional)) return;
+    BlockFace facing = directional.getFacing();
+    if (SpawnZonePolicy.dispenserAffectsRegion(region, position(dispenser),
+        facing.getModX(), facing.getModY(), facing.getModZ())) {
+      event.setCancelled(true);
+    }
   }
 
   @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
@@ -201,8 +231,7 @@ final class SpawnZoneProtection implements Listener {
   }
 
   private boolean pistonTouches(Block piston, BlockFace direction, List<Block> moved) {
-    World world = piston.getWorld();
-    SpawnRegion region = regions.get(world.getUID());
+    SpawnRegion region = region(piston.getWorld());
     if (region == null) return false;
     if (region.contains(piston.getRelative(direction).getX(),
         piston.getRelative(direction).getY(), piston.getRelative(direction).getZ())) {
@@ -210,7 +239,7 @@ final class SpawnZoneProtection implements Listener {
     }
     List<SpawnBlockPos> positions = new ArrayList<>(moved.size());
     for (Block block : moved) {
-      positions.add(new SpawnBlockPos(block.getX(), block.getY(), block.getZ()));
+      positions.add(position(block));
     }
     return SpawnZonePolicy.pistonTouchesRegion(region, positions,
         direction.getModX(), direction.getModY(), direction.getModZ());
@@ -234,6 +263,38 @@ final class SpawnZoneProtection implements Listener {
   @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
   public void onEntityBlockForm(EntityBlockFormEvent event) {
     deny(event, SpawnZonePolicy.GuardEvent.ENTITY_BLOCK_FORM, event.getBlock(), false);
+  }
+
+  /** Boats, minecarts, armour stands and end crystals would obstruct or trap arrivals. */
+  @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+  public void onEntityPlace(EntityPlaceEvent event) {
+    Block placed = event.getBlock();
+    if (placed == null) return;
+    SpawnRegion region = regions.get(placed.getWorld().getUID());
+    if (region == null) return;
+    if (SpawnZonePolicy.deniedPlacement(SpawnZonePolicy.GuardEvent.ENTITY_PLACE, region,
+        touchedCells(placed, event.getBlockFace()), creativeOperator(event.getPlayer()))) {
+      event.setCancelled(true);
+    }
+  }
+
+  /** Item frames and paintings occupy an arrival-space cell once placed on the core surface. */
+  @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+  public void onHangingPlace(HangingPlaceEvent event) {
+    Block placed = event.getBlock();
+    if (placed == null) return;
+    SpawnRegion region = regions.get(placed.getWorld().getUID());
+    if (region == null) return;
+    if (SpawnZonePolicy.deniedPlacement(SpawnZonePolicy.GuardEvent.HANGING_PLACE, region,
+        touchedCells(placed, event.getBlockFace()), creativeOperator(event.getPlayer()))) {
+      event.setCancelled(true);
+    }
+  }
+
+  /** The cell the event reports plus the cell an entity placed against that face would occupy. */
+  private static List<SpawnBlockPos> touchedCells(Block block, BlockFace face) {
+    if (face == null) return List.of(position(block));
+    return List.of(position(block), position(block.getRelative(face)));
   }
 
   @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)

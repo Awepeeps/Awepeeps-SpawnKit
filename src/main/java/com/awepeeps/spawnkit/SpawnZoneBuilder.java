@@ -109,6 +109,11 @@ final class SpawnZoneBuilder {
     boolean lavaBeneath = anyLava;
     boolean outsideBorder = false;
     int scanFloor = floorY == null ? maxSurface : floorY;
+    // Everything the previous pass already placed in these columns counts as ours, including the
+    // foundation it filled beneath the floor; otherwise the second pass (the house) would refuse the
+    // site on any terrain that dips more than a couple of blocks below the chosen floor.
+    SpawnRegion ownBuild = existingCore == null ? null
+        : SpawnZonePolicy.ownedVolume(existingCore, scanFloor, layout.coreDepth(), minHeight);
     for (Column column : sampled) {
       if (!world.getWorldBorder().isInside(
           new Location(world, column.x() + 0.5, scanFloor, column.z() + 0.5))) {
@@ -117,9 +122,8 @@ final class SpawnZoneBuilder {
       for (int y = scanFloor - layout.coreDepth() - 1;
            y <= scanFloor + layout.wallHeight() + 1; y++) {
         if (y < minHeight || y >= maxHeight) continue;
-        if (existingCore != null
-            && existingCore.contains(column.x(), y, column.z())) {
-          continue; // Our own protected core from a previous pass.
+        if (ownBuild != null && ownBuild.contains(column.x(), y, column.z())) {
+          continue; // Our own protected core or foundation from a previous pass.
         }
         Material material = world.getBlockAt(column.x(), y, column.z()).getType();
         SpawnZonePolicy.BlockKind kind = SpawnZonePolicy.classify(material);
@@ -179,7 +183,7 @@ final class SpawnZoneBuilder {
         case DOOR_UPPER -> place(block, DOOR_MATERIAL, doorData(Bisected.Half.TOP));
         case BED_FOOT -> place(block, BED_MATERIAL, bedData(offset, Bed.Part.FOOT, layout));
         case BED_HEAD -> place(block, BED_MATERIAL, bedData(offset, Bed.Part.HEAD, layout));
-        case CHEST -> place(block, Material.CHEST, null);
+        case CHEST -> place(block, Material.CHEST, null, SpawnZonePolicy.overwriteExisting(role));
         case WALL_TORCH -> place(block, Material.WALL_TORCH, torchData(offset, layout));
       });
     }
@@ -263,7 +267,18 @@ final class SpawnZoneBuilder {
   }
 
   private Runnable place(Block block, Material material, org.bukkit.block.data.BlockData data) {
+    return place(block, material, data, true);
+  }
+
+  /**
+   * With {@code overwrite} false the operation is skipped when the block already is the wanted
+   * block. That is used for the supply chest so a re-issued layout can never replace the chest
+   * block (which would wipe whatever the players have stored in it).
+   */
+  private Runnable place(Block block, Material material, org.bukkit.block.data.BlockData data,
+                         boolean overwrite) {
     return () -> {
+      if (!overwrite && block.getType() == material) return;
       if (data != null) {
         block.setBlockData(data, false);
       } else if (material == Material.AIR) {
@@ -298,18 +313,7 @@ final class SpawnZoneBuilder {
 
   private org.bukkit.block.data.BlockData torchData(SpawnBlockPos offset, SpawnZoneLayout layout) {
     Directional torch = (Directional) Bukkit.createBlockData(Material.WALL_TORCH);
-    int r = layout.innerRadius();
-    BlockFace facing;
-    if (offset.z() == r) {
-      facing = BlockFace.NORTH; // mounted on the south wall, pointing into the room
-    } else if (offset.z() == -r) {
-      facing = BlockFace.SOUTH;
-    } else if (offset.x() == r) {
-      facing = BlockFace.WEST;
-    } else {
-      facing = BlockFace.EAST;
-    }
-    torch.setFacing(facing);
+    torch.setFacing(layout.wallTorchFacing(offset));
     return torch;
   }
 
