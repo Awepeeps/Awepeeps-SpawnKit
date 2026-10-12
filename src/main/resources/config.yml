@@ -1,0 +1,7 @@
+# The consuming server supplies all content and date policy here.
+spawn-kit:
+  enabled: false
+  starts-on: ""
+  expires-on: ""
+  timezone: ""
+  items: []

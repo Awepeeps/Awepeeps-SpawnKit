@@ -1,0 +1,11 @@
+# Example only: the consuming server chooses its own content and date window.
+spawn-kit:
+  enabled: true
+  starts-on: "2026-01-01"
+  expires-on: "2026-12-31"
+  timezone: "UTC"
+  items:
+    - material: TORCH
+      amount: 32
+    - material: BREAD
+      amount: 16

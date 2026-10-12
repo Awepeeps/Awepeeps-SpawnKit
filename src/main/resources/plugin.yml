@@ -1,0 +1,6 @@
+name: AwepeepsSpawnKit
+version: '${version}'
+main: com.awepeeps.spawnkit.AwepeepsSpawnKit
+api-version: '1.21'
+description: Places a configurable, expiring one-time starter kit in a safe chest near world spawn.
+authors: [Awepeeps]
