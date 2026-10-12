@@ -94,9 +94,10 @@ class SpawnZonePolicyTest {
         .map(Enum::name).collect(Collectors.toSet());
     assertEquals(Set.of(
         "BLOCK_BREAK", "BLOCK_PLACE", "BLOCK_MULTI_PLACE", "PLAYER_BUCKET_EMPTY",
+        "ENTITY_PLACE", "HANGING_PLACE",
         "BLOCK_BURN", "BLOCK_SPREAD", "BLOCK_FORM", "BLOCK_FADE", "BLOCK_GROW",
         "BLOCK_FERTILIZE", "BLOCK_FROM_TO", "FLUID_LEVEL_CHANGE", "BLOCK_IGNITE",
-        "BLOCK_DISPENSE", "BLOCK_PHYSICS", "BLOCK_PISTON_EXTEND", "BLOCK_PISTON_RETRACT",
+        "BLOCK_DISPENSE", "BLOCK_PISTON_EXTEND", "BLOCK_PISTON_RETRACT",
         "BLOCK_EXPLODE", "ENTITY_EXPLODE", "ENTITY_CHANGE_BLOCK", "ENTITY_BLOCK_FORM",
         "STRUCTURE_GROW", "SPONGE_ABSORB"), actual);
   }
@@ -118,13 +119,89 @@ class SpawnZonePolicyTest {
 
   @Test
   void spawnLocationRulesKeepPersonalSpawns() {
-    assertTrue(SpawnZonePolicy.overrideJoinSpawn(false));
-    assertFalse(SpawnZonePolicy.overrideJoinSpawn(true));
+    // Only a first ever join is redirected: a returning player keeps the player-data location.
+    assertTrue(SpawnZonePolicy.overrideJoinSpawn(true));
+    assertFalse(SpawnZonePolicy.overrideJoinSpawn(false));
     assertTrue(SpawnZonePolicy.overrideRespawn(false, false));
     assertFalse(SpawnZonePolicy.overrideRespawn(true, false));
     assertFalse(SpawnZonePolicy.overrideRespawn(false, true));
     assertFalse(SpawnZonePolicy.overrideRespawn(true, true));
     assertEquals(0, SpawnZonePolicy.MANAGED_RESPAWN_RADIUS);
+  }
+
+  @Test
+  void multiBlockPlacementsAreDeniedWhenAnyHalfLandsInTheArrivalSpace() {
+    // The arrival space above the core top, in absolute coordinates.
+    SpawnRegion arrival = SpawnRegion.of(-1, 0, -1, 1, 2, 1);
+    // A bed with its foot outside the zone and its head inside it.
+    List<SpawnBlockPos> straddlingBed =
+        List.of(new SpawnBlockPos(0, 0, 2), new SpawnBlockPos(0, 0, 1));
+    assertTrue(SpawnZonePolicy.deniedPlacement(SpawnZonePolicy.GuardEvent.BLOCK_MULTI_PLACE,
+        arrival, straddlingBed, false));
+    assertFalse(SpawnZonePolicy.deniedPlacement(SpawnZonePolicy.GuardEvent.BLOCK_MULTI_PLACE,
+        arrival, straddlingBed, true), "a creative operator may still place it");
+    // A bed entirely outside the zone is allowed.
+    assertFalse(SpawnZonePolicy.deniedPlacement(SpawnZonePolicy.GuardEvent.BLOCK_MULTI_PLACE,
+        arrival, List.of(new SpawnBlockPos(0, 0, 3), new SpawnBlockPos(0, 0, 4)), false));
+  }
+
+  @Test
+  void dispensersFiringIntoTheRegionAreBlocked() {
+    SpawnRegion core = SpawnRegion.of(-1, -3, -1, 1, -1, 1);
+    // A dispenser next to the core, firing at the core block it faces.
+    assertTrue(SpawnZonePolicy.dispenserAffectsRegion(core, new SpawnBlockPos(0, -1, -2), 0, 0, 1));
+    // A dispenser inside the core.
+    assertTrue(SpawnZonePolicy.dispenserAffectsRegion(core, new SpawnBlockPos(0, -1, 0), 0, 1, 0));
+    // Firing away from the core.
+    assertFalse(SpawnZonePolicy.dispenserAffectsRegion(core, new SpawnBlockPos(0, -1, -2), 0, 0, -1));
+  }
+
+  @Test
+  void reissuedLayoutsNeverReplaceTheSupplyChest() {    assertFalse(SpawnZonePolicy.overwriteExisting(SpawnZoneLayout.Role.CHEST));
+    assertTrue(SpawnZonePolicy.overwriteExisting(SpawnZoneLayout.Role.DOOR_LOWER));
+    assertTrue(SpawnZonePolicy.overwriteExisting(SpawnZoneLayout.Role.BED_HEAD));
+    assertTrue(SpawnZonePolicy.overwriteExisting(SpawnZoneLayout.Role.CORE));
+  }
+
+  @Test
+  void aRebuildIgnoresTheCoreAndFoundationThePluginAlreadyPlaced() {
+    // spawnY 65, core-depth 3, clear-height 3: the protected zone is y = 62..67 in these columns.
+    SpawnRegion protectedZone = SpawnRegion.of(-1, 62, -1, 1, 67, 1);
+    SpawnRegion own = SpawnZonePolicy.ownedVolume(protectedZone, 64, 3, -64);
+    assertEquals(SpawnRegion.of(-1, 60, -1, 1, 67, 1), own);
+    // The core itself and the foundation the previous pass could have filled beneath the floor.
+    assertTrue(own.contains(0, 62, 0));
+    assertTrue(own.contains(0, 61, 0), "the deepest foundation cell must be treated as ours");
+    assertTrue(own.contains(0, 60, 0), "the whole scanned depth under the core is ours");
+    // Nothing outside the core columns or below the scanned band is claimed.
+    assertFalse(own.contains(2, 61, 0));
+    assertFalse(own.contains(0, 59, 0));
+    assertFalse(own.contains(0, 68, 0));
+    // A world floor above the band must not produce an inverted region, and the world floor is
+    // never claimed beyond what exists.
+    assertEquals(-64, SpawnZonePolicy.ownedVolume(protectedZone, -60, 3, -64).minY());
+    assertEquals(62, SpawnZonePolicy.ownedVolume(protectedZone, 200, 3, -64).minY());
+  }
+
+  @Test
+  void playerPlantedCropsAreOccupiedAndNeverCleared() {    // Crops only ever exist because a player planted them, so they must refuse the site instead of
+    // being silently cleared (and never be counted as replaceable natural vegetation).
+    for (Material crop : List.of(Material.WHEAT, Material.CARROTS, Material.POTATOES,
+        Material.BEETROOTS, Material.PUMPKIN_STEM, Material.MELON_STEM, Material.FARMLAND)) {
+      assertEquals(SpawnZonePolicy.BlockKind.OCCUPIED, SpawnZonePolicy.classify(crop), crop.name());
+      assertFalse(SpawnZonePolicy.isClearableVegetation(crop), crop.name());
+      assertFalse(SpawnZonePolicy.isReplaceableByBuild(crop), crop.name());
+    }
+    assertTrue(SpawnZonePolicy.isClearableVegetation(Material.SHORT_GRASS));
+    assertTrue(SpawnZonePolicy.isClearableVegetation(Material.SNOW));
+    assertTrue(SpawnZonePolicy.isClearableVegetation(Material.DANDELION));
+  }
+
+  @Test
+  void clampPullsConfiguredValuesIntoTheirSupportedRange() {
+    assertEquals(1, SpawnZonePolicy.clamp(0, 1, 8));
+    assertEquals(8, SpawnZonePolicy.clamp(99, 1, 8));
+    assertEquals(3, SpawnZonePolicy.clamp(3, 1, 8));
   }
 
   @Test

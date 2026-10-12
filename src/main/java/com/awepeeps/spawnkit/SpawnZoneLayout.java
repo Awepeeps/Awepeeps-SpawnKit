@@ -4,12 +4,14 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.bukkit.block.BlockFace;
 
 /**
  * Pure plan of the spawn layout: a 3x3 core of protected blocks, a protected clear column above
  * it, and a destructible house built strictly around both. All coordinates are relative offsets
  * from the world spawn block (the block the arriving player's feet occupy), so the same plan can be
- * placed in any world. No Bukkit types are used here so the whole geometry is unit testable.
+ * placed in any world. Nothing here touches a world or the server (only plain enum constants), so
+ * the whole geometry is unit testable.
  *
  * <pre>
  *   relative Y          what lives there
@@ -110,6 +112,35 @@ final class SpawnZoneLayout {
 
   static boolean validChests(int value) {
     return value >= MIN_CHESTS && value <= MAX_CHESTS;
+  }
+
+  /**
+   * Clamps a configured dimension to its documented range. Used instead of refusing to load so that
+   * a typo in one dimension cannot disable the whole plugin (and with it spawn protection).
+   */
+  static int clampCoreDepth(int value) {
+    return SpawnZonePolicy.clamp(value, MIN_CORE_DEPTH, MAX_CORE_DEPTH);
+  }
+
+  static int clampClearHeight(int value) {
+    return SpawnZonePolicy.clamp(value, MIN_CLEAR_HEIGHT, MAX_CLEAR_HEIGHT);
+  }
+
+  static int clampMargin(int value) {
+    return SpawnZonePolicy.clamp(value, MIN_MARGIN, MAX_MARGIN);
+  }
+
+  static int clampBeds(int value) {
+    return SpawnZonePolicy.clamp(value, MIN_BEDS, MAX_BEDS);
+  }
+
+  static int clampChests(int value) {
+    return SpawnZonePolicy.clamp(value, MIN_CHESTS, MAX_CHESTS);
+  }
+
+  /** The values used when the configuration cannot be read at all. */
+  static SpawnZoneLayout defaults() {
+    return new SpawnZoneLayout(3, 3, 1, 1, 1);
   }
 
   int wallRadius() {
@@ -314,5 +345,18 @@ final class SpawnZoneLayout {
     SpawnBlockPos head() {
       return foot.offset(headDirection, 0, 0);
     }
+  }
+
+  /**
+   * The direction a wall torch at {@code offset} points, i.e. away from the wall it is mounted on.
+   * Vanilla requires the sturdy face of the block behind the torch to point in this direction, so
+   * the mounting block is always {@code offset - facing}.
+   */
+  BlockFace wallTorchFacing(SpawnBlockPos offset) {
+    int r = innerRadius();
+    if (offset.z() == r) return BlockFace.NORTH; // mounted on the south wall
+    if (offset.z() == -r) return BlockFace.SOUTH; // mounted on the north wall
+    if (offset.x() == r) return BlockFace.WEST; // mounted on the east wall
+    return BlockFace.EAST; // mounted on the west wall
   }
 }

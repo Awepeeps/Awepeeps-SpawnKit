@@ -2,9 +2,12 @@ package com.awepeeps.spawnkit;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.util.ArrayList;
 import java.util.EnumSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import org.bukkit.block.BlockFace;
 import org.junit.jupiter.api.Test;
 
 class SpawnZoneLayoutTest {
@@ -181,5 +184,78 @@ class SpawnZoneLayoutTest {
     assertTrue(SpawnZoneLayout.validCoreDepth(3));
     assertTrue(SpawnZoneLayout.validClearHeight(2));
     assertTrue(SpawnZoneLayout.validMargin(2));
+  }
+
+  @Test
+  void clampsAnyConfiguredDimensionIntoAUsableLayout() {
+    assertEquals(1, SpawnZoneLayout.clampCoreDepth(0));
+    assertEquals(1, SpawnZoneLayout.clampCoreDepth(-5));
+    assertEquals(8, SpawnZoneLayout.clampCoreDepth(99));
+    assertEquals(3, SpawnZoneLayout.clampCoreDepth(3));
+    assertEquals(2, SpawnZoneLayout.clampClearHeight(1));
+    assertEquals(8, SpawnZoneLayout.clampClearHeight(100));
+    assertEquals(1, SpawnZoneLayout.clampMargin(0));
+    assertEquals(2, SpawnZoneLayout.clampMargin(3));
+    assertEquals(1, SpawnZoneLayout.clampBeds(0));
+    assertEquals(4, SpawnZoneLayout.clampBeds(9));
+    assertEquals(1, SpawnZoneLayout.clampChests(-1));
+    assertEquals(4, SpawnZoneLayout.clampChests(9));
+
+    // Values that would previously refuse to start must build a usable layout instead.
+    SpawnZoneLayout clamped = new SpawnZoneLayout(
+        SpawnZoneLayout.clampCoreDepth(Integer.MIN_VALUE),
+        SpawnZoneLayout.clampClearHeight(Integer.MAX_VALUE),
+        SpawnZoneLayout.clampMargin(0),
+        SpawnZoneLayout.clampBeds(99),
+        SpawnZoneLayout.clampChests(99));
+    assertEquals(1, clamped.coreDepth());
+    assertEquals(8, clamped.clearHeight());
+    assertEquals(1, clamped.margin());
+    assertEquals(4, clamped.beds());
+    assertEquals(4, clamped.chests());
+    assertNotNull(SpawnZoneLayout.defaults());
+  }
+
+  @Test
+  void furnishingsMatchTheDocumentedFloorPlan() {
+    SpawnZoneLayout layout = defaultLayout();
+    Map<SpawnBlockPos, SpawnZoneLayout.Role> plan = layout.blockPlan();
+    // Diagram row z=-2: the crafting table against the north wall.
+    assertEquals(SpawnZoneLayout.Role.CRAFTING_TABLE, plan.get(new SpawnBlockPos(0, 0, -2)));
+    // Diagram row z=0: the chest against the east wall.
+    assertEquals(SpawnZoneLayout.Role.CHEST, plan.get(new SpawnBlockPos(2, 0, 0)));
+    // Diagram row z=2: the bed foot and head.
+    assertEquals(SpawnZoneLayout.Role.BED_FOOT, plan.get(new SpawnBlockPos(1, 0, 2)));
+    assertEquals(SpawnZoneLayout.Role.BED_HEAD, plan.get(new SpawnBlockPos(2, 0, 2)));
+    // Diagram row z=3: the two-block door.
+    assertEquals(SpawnZoneLayout.Role.DOOR_LOWER, plan.get(new SpawnBlockPos(0, 0, 3)));
+    assertEquals(SpawnZoneLayout.Role.DOOR_UPPER, plan.get(new SpawnBlockPos(0, 1, 3)));
+    // Exactly the documented torches, all at head height on the walls.
+    assertEquals(Set.of(
+        new SpawnBlockPos(1, 1, 2), new SpawnBlockPos(-1, 1, 2),
+        new SpawnBlockPos(1, 1, -2), new SpawnBlockPos(-1, 1, -2),
+        new SpawnBlockPos(2, 1, 0), new SpawnBlockPos(-2, 1, 0)),
+        Set.copyOf(layout.offsetsWithRole(SpawnZoneLayout.Role.WALL_TORCH)));
+    // Lower door half is planned before the upper half so it is placed first.
+    List<SpawnBlockPos> order = new ArrayList<>(plan.keySet());
+    assertTrue(order.indexOf(new SpawnBlockPos(0, 0, 3))
+        < order.indexOf(new SpawnBlockPos(0, 1, 3)));
+    assertTrue(order.indexOf(new SpawnBlockPos(1, 0, 2))
+        < order.indexOf(new SpawnBlockPos(2, 0, 2)));
+  }
+
+  @Test
+  void everyWallTorchIsMountedOnASolidWall() {
+    for (int margin = SpawnZoneLayout.MIN_MARGIN; margin <= SpawnZoneLayout.MAX_MARGIN; margin++) {
+      SpawnZoneLayout layout = new SpawnZoneLayout(3, 3, margin, 1, 1);
+      for (SpawnBlockPos torch : layout.offsetsWithRole(SpawnZoneLayout.Role.WALL_TORCH)) {
+        // A torch faces away from the wall it is mounted on, so the mounting block is behind it.
+        BlockFace facing = layout.wallTorchFacing(torch);
+        SpawnBlockPos mounting = torch.offset(
+            -facing.getModX(), -facing.getModY(), -facing.getModZ());
+        assertEquals(SpawnZoneLayout.Role.WALL, layout.blockPlan().get(mounting),
+            "torch at " + torch + " must be mounted on a wall at " + mounting);
+      }
+    }
   }
 }

@@ -10,6 +10,8 @@ import org.bukkit.entity.Player;
 
 /** Operator command to build or migrate the spawn layout for the current world. */
 final class SpawnKitCommand implements CommandExecutor, TabCompleter {
+  private static final String USAGE = "Usage: /%s build confirm [supplies]";
+
   private final SpawnKitManager manager;
 
   SpawnKitCommand(SpawnKitManager manager) {
@@ -18,18 +20,29 @@ final class SpawnKitCommand implements CommandExecutor, TabCompleter {
 
   @Override
   public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
-    if (args.length == 0 || !args[0].equalsIgnoreCase("build")) {
-      sender.sendMessage("Usage: /" + label + " build confirm [supplies]");
+    if (args.length < 2 || args.length > 3 || !args[0].equalsIgnoreCase("build")) {
+      sender.sendMessage(USAGE.formatted(label));
       return true;
     }
-    if (args.length < 2 || !args[1].equalsIgnoreCase("confirm")) {
+    if (!args[1].equalsIgnoreCase("confirm")) {
       sender.sendMessage("Add 'confirm' to build: /" + label + " build confirm [supplies]");
       return true;
     }
-    boolean supplies = args.length >= 3 && args[2].equalsIgnoreCase("supplies");
+    boolean supplies = false;
+    if (args.length >= 3) {
+      if (!args[2].equalsIgnoreCase("supplies")) {
+        sender.sendMessage(USAGE.formatted(label));
+        return true;
+      }
+      supplies = true;
+    }
     World world = resolveWorld(sender);
     if (world == null) {
       sender.sendMessage("No Overworld is loaded; nothing was built.");
+      return true;
+    }
+    if (!sender.hasPermission("aweepsspawnkit.admin")) {
+      sender.sendMessage("You do not have permission to build the spawn layout.");
       return true;
     }
     sender.sendMessage(manager.buildNow(world, supplies));
