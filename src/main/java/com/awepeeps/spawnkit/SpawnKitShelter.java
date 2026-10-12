@@ -140,7 +140,11 @@ final class SpawnKitShelter {
       if (!world.isChunkLoaded(tx >> 4, tz >> 4)) return false;
       if (!world.getWorldBorder().isInside(new Location(world, tx + 0.5, floorY, tz + 0.5))) return false;
       Block floor = world.getBlockAt(tx, floorY - 1, tz);
-      if (!floor.getType().isSolid() || floor.isLiquid()) return false;
+      Material floorType = floor.getType();
+      boolean leaves = floorType.name().equals("LEAVES") || floorType.name().endsWith("_LEAVES");
+      if (floor.getState() instanceof TileState
+          || !SpawnKitPolicy.safeFloor(
+              floorType.isSolid(), floor.isLiquid(), leaves, UNSAFE_FLOORS.contains(floorType))) return false;
       if (!world.getBlockAt(tx, floorY, tz).getType().isAir()) return false;
     }
     return true;
@@ -210,7 +214,7 @@ final class SpawnKitShelter {
   private void placeOutsideTorches(World world, Site site, Map<Block, BlockState> originals) {
     for (int[] offset : List.of(
         new int[] {-4, 0}, new int[] {4, 0}, new int[] {0, -4}, new int[] {0, 4})) {
-      set(world.getBlockAt(site.x() + offset[0], site.y() + 1, site.z() + offset[1]),
+      set(world.getBlockAt(site.x() + offset[0], site.y(), site.z() + offset[1]),
           Material.TORCH, originals);
     }
   }
@@ -222,12 +226,14 @@ final class SpawnKitShelter {
 
   private void rollback(Map<Block, BlockState> originals) {
     List<BlockState> states = new ArrayList<>(originals.values());
+    boolean failed = false;
     for (int i = states.size() - 1; i >= 0; i--) {
       if (!states.get(i).update(true, false)) {
-        plugin.getLogger().severe("Could not roll back every block after spawn shelter placement failed.");
-        return;
+        failed = true;
       }
     }
+    if (failed) plugin.getLogger().severe(
+        "Could not roll back every block after spawn shelter placement failed.");
   }
 
   record Site(int x, int y, int z) {}
