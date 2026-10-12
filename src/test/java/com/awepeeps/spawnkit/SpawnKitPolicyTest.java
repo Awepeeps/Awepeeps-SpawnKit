@@ -65,9 +65,9 @@ class SpawnKitPolicyTest {
 
   @Test
   void shelterCanLevelSmallTerrainVariationsButRejectsSteepSites() {
-    assertTrue(SpawnKitPolicy.canLevelShelterTerrain(66, 68));
-    assertFalse(SpawnKitPolicy.canLevelShelterTerrain(65, 68));
-    assertFalse(SpawnKitPolicy.canLevelShelterTerrain(68, 66));
+    assertTrue(SpawnKitPolicy.canLevelShelterTerrain(64, 68));
+    assertFalse(SpawnKitPolicy.canLevelShelterTerrain(63, 68));
+    assertFalse(SpawnKitPolicy.canLevelShelterTerrain(68, 64));
   }
 
   @Test
