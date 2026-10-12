@@ -66,12 +66,12 @@ class SpawnKitPolicyTest {
   @Test
   void configuredKitItemsAreParsedAndStackAmountsPreserved() {
     SpawnKitContents kit = new SpawnKitContents(List.of(
-        Map.of("material", "COOKED_BEEF", "amount", 99),
-        Map.of("material", "DIAMOND_SWORD", "amount", 1)), SpawnKitPolicyTest::resolve);
+        Map.of("material", "PAPER", "amount", 99),
+        Map.of("material", "EMERALD", "amount", 1)), SpawnKitPolicyTest::resolve);
 
     assertEquals(List.of(
-        new SpawnKitContents.Stack(Material.COOKED_BEEF, 99),
-        new SpawnKitContents.Stack(Material.DIAMOND_SWORD, 1)), kit.stacks());
+        new SpawnKitContents.Stack(Material.PAPER, 99),
+        new SpawnKitContents.Stack(Material.EMERALD, 1)), kit.stacks());
     assertEquals(2, kit.stacks().size());
   }
 
@@ -112,8 +112,6 @@ class SpawnKitPolicyTest {
       case "PAPER" -> new SpawnKitContents.ItemDefinition(Material.PAPER, 64, true);
       case "EMERALD" -> new SpawnKitContents.ItemDefinition(Material.EMERALD, 64, true);
       case "STONE" -> new SpawnKitContents.ItemDefinition(Material.STONE, 64, true);
-      case "COOKED_BEEF" -> new SpawnKitContents.ItemDefinition(Material.COOKED_BEEF, 64, true);
-      case "DIAMOND_SWORD" -> new SpawnKitContents.ItemDefinition(Material.DIAMOND_SWORD, 1, true);
       case "AIR" -> new SpawnKitContents.ItemDefinition(Material.AIR, 64, false);
       default -> null;
     };
