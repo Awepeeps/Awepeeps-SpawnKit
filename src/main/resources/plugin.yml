@@ -2,6 +2,15 @@ name: AwepeepsSpawnKit
 version: '${version}'
 main: com.awepeeps.spawnkit.AwepeepsSpawnKit
 api-version: '1.21'
-description: Creates a configurable, expiring spawn shelter and starter kit.
+description: Protects a spawn core and builds a configurable, expiring spawn house and starter kit.
 authors: [Awepeeps]
 softdepend: [BlueMap]
+commands:
+  spawnkit:
+    description: Build or migrate the protected spawn layout for the current world.
+    usage: /spawnkit build confirm [supplies]
+    permission: awepeepsspawnkit.admin
+permissions:
+  awepeepsspawnkit.admin:
+    description: Allows building or migrating the spawn layout.
+    default: op

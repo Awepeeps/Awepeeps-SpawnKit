@@ -4,7 +4,6 @@ import java.io.File;
 import java.io.IOException;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -16,210 +15,412 @@ import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import org.bukkit.Bukkit;
 import org.bukkit.Chunk;
-import org.bukkit.HeightMap;
+import org.bukkit.GameRules;
 import org.bukkit.Location;
-import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.World;
-import org.bukkit.block.Block;
-import org.bukkit.block.BlockState;
-import org.bukkit.block.Chest;
 import org.bukkit.configuration.file.YamlConfiguration;
-import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.java.JavaPlugin;
 
+/**
+ * Orchestrates the protected spawn zone (always available, independent of the date window) and the
+ * test-only house/chest kit. Persists a per-world record before touching the world, never builds
+ * twice, repairs a damaged protected core, and defers with a reason and backoff when the spawn
+ * terrain is unsuitable. Terrain is loaded asynchronously and ticketed only for the build.
+ */
 final class SpawnKitManager {
-  private static final int SEARCH_RADIUS = 8;
-  private static final int DISCOVERY_Y = 8;
-  private static final Set<Material> UNSAFE_FLOORS = Set.of(
-      Material.CACTUS, Material.MAGMA_BLOCK, Material.CAMPFIRE, Material.SOUL_CAMPFIRE,
-      Material.FIRE, Material.SOUL_FIRE, Material.POWDER_SNOW, Material.SWEET_BERRY_BUSH,
-      Material.POINTED_DRIPSTONE, Material.SLIME_BLOCK, Material.HONEY_BLOCK);
+  private static final int LAYOUT_VERSION = 2;
 
   private final JavaPlugin plugin;
   private final List<SpawnKitContents.Stack> stacks;
-  private final int shelterSearchRadius;
-  private final NamespacedKey ownedKey;
-  private final SpawnKitShelter shelter;
+  private final SpawnZoneLayout layout;
+  private final SpawnZoneBuilder builder;
+  private final SpawnZoneProtection protection = new SpawnZoneProtection();
+  private final SpawnZoneSpawnControl spawnControl = new SpawnZoneSpawnControl();
+
   private final File storeFile;
   private final YamlConfiguration store;
   private final Map<String, Long> retryAfterNanos = new HashMap<>();
   private final Map<String, Integer> retryAttempts = new HashMap<>();
-  private final Map<String, String> lastNoCandidateSummary = new HashMap<>();
+  private final Map<String, String> lastDeferral = new HashMap<>();
   private final Map<String, Long> nextMarkerUpdateNanos = new HashMap<>();
-  private final Set<String> incompleteSetupReported = new HashSet<>();
   private final Set<String> pendingSetups = new HashSet<>();
+  private final Set<String> upgradeLogged = new HashSet<>();
+  private final Set<String> interruptedLogged = new HashSet<>();
   private boolean invalidConfigLogged;
 
-  SpawnKitManager(JavaPlugin plugin, List<SpawnKitContents.Stack> stacks, int shelterSearchRadius) {
+  SpawnKitManager(JavaPlugin plugin, SpawnZoneLayout layout, List<SpawnKitContents.Stack> stacks) {
     this.plugin = plugin;
+    this.layout = layout;
     this.stacks = stacks;
-    this.shelterSearchRadius = shelterSearchRadius;
-    this.ownedKey = new NamespacedKey(plugin, "spawn_kit_chest");
-    this.shelter = new SpawnKitShelter(plugin, ownedKey, shelterSearchRadius);
+    NamespacedKey ownedKey = new NamespacedKey(plugin, "spawn_kit_chest");
+    this.builder = new SpawnZoneBuilder(plugin, ownedKey);
     this.storeFile = new File(plugin.getDataFolder(), "issued-kits.yml");
     this.store = YamlConfiguration.loadConfiguration(storeFile);
   }
 
+  SpawnZoneProtection protection() {
+    return protection;
+  }
+
+  SpawnZoneSpawnControl spawnControl() {
+    return spawnControl;
+  }
+
+  SpawnZoneLayout layout() {
+    return layout;
+  }
+
+  private boolean zoneEnabled() {
+    return plugin.getConfig().getBoolean("spawn-zone.enabled", true);
+  }
+
+  private boolean houseConfigured() {
+    return plugin.getConfig().getBoolean("spawn-kit.house.enabled", false);
+  }
+
+  private boolean chestConfigured() {
+    return plugin.getConfig().getBoolean("spawn-kit.house.chest.enabled", false);
+  }
+
+  private boolean markerConfigured() {
+    return plugin.getConfig().getBoolean("spawn-kit.spawn-marker.enabled", false);
+  }
+
+  private boolean manageSpawnRadius() {
+    return plugin.getConfig().getBoolean("spawn-zone.manage-spawn-radius", true);
+  }
+
   void tick() {
-    boolean enabled = plugin.getConfig().getBoolean("spawn-kit.enabled", false);
-    if (!SpawnKitPolicy.isActive(
-        enabled,
+    boolean kitEnabled = plugin.getConfig().getBoolean("spawn-kit.enabled", false);
+    boolean kitActive = SpawnKitPolicy.isActive(
+        kitEnabled,
         plugin.getConfig().getString("spawn-kit.starts-on", ""),
         plugin.getConfig().getString("spawn-kit.expires-on", ""),
         plugin.getConfig().getString("spawn-kit.timezone", ""),
-        Instant.now())) {
-      if (enabled && !invalidConfigLogged) {
-        invalidConfigLogged = true;
-        plugin.getLogger().warning(
-            "Spawn Kit is disabled: configure a valid date window and timezone.");
-      }
-      return;
+        Instant.now());
+    if (kitEnabled && !kitActive && !invalidConfigLogged) {
+      invalidConfigLogged = true;
+      plugin.getLogger().warning(
+          "Spawn Kit is inactive: configure a valid date window and timezone.");
+    } else if (kitActive) {
+      invalidConfigLogged = false;
     }
-    invalidConfigLogged = false;
 
-    World world = Bukkit.getWorlds().stream()
+    World world = primaryOverworld();
+    if (world == null) return;
+
+    spawnControl.setEnabled(zoneEnabled());
+    if (zoneEnabled()) {
+      ensureZone(world);
+    } else {
+      restoreSpawnRadius(world);
+    }
+    if (kitActive) {
+      ensureKit(world);
+    }
+    if (markerConfigured()) {
+      updateSpawnMarker(world);
+    }
+  }
+
+  private World primaryOverworld() {
+    return Bukkit.getWorlds().stream()
         .filter(candidate -> candidate.getEnvironment() == World.Environment.NORMAL)
         .findFirst().orElse(null);
-    if (world != null) {
-      updateSpawnMarker(world);
-      ensureWorldSetup(world);
-    }
   }
 
-  private void ensureWorldSetup(World world) {
-    String worldPath = "worlds." + world.getUID();
-    boolean houseEnabled = plugin.getConfig().getBoolean("spawn-kit.house.enabled", false);
-    boolean markerEnabled = plugin.getConfig().getBoolean("spawn-kit.spawn-marker.enabled", false);
-    boolean chestEnabled = plugin.getConfig().getBoolean("spawn-kit.house.chest.enabled", false);
-    if (!houseEnabled && !markerEnabled && chestEnabled) {
-      ensureChest(world);
-      return;
-    }
-    if (!houseEnabled && !markerEnabled) return;
+  // ---- Protected zone -----------------------------------------------------------------------
 
-    boolean setupComplete = store.getBoolean(worldPath + ".setup-complete", false);
-    String worldId = world.getUID().toString();
-    if (pendingSetups.contains(worldId)) return;
-    if (!setupComplete && store.getBoolean(worldPath + ".setup-in-progress", false)) {
-      if (incompleteSetupReported.add(worldId)) {
-        plugin.getLogger().severe(
-            "Spawn Kit setup was interrupted for world " + world.getName()
-                + "; refusing to build another shelter until the world/setup record is reviewed.");
-      }
-      return;
-    }
-    if (!setupComplete) {
-      long now = System.nanoTime();
-      if (now < retryAfterNanos.getOrDefault(worldId, 0L)) return;
-      store.set(worldPath + ".setup-in-progress", true);
-      if (!saveStore("Could not reserve the spawn setup record; no shelter was built.")) {
-        store.set(worldPath + ".setup-in-progress", false);
-        retrySetupLater(worldId);
-        return;
-      }
-      pendingSetups.add(worldId);
-      try {
-        loadSearchChunks(world).whenComplete((chunks, error) ->
-            Bukkit.getScheduler().runTask(plugin,
-                () -> finishSetup(world, worldPath, worldId, houseEnabled, markerEnabled,
-                    chestEnabled, chunks, error)));
-      } catch (RuntimeException error) {
-        pendingSetups.remove(worldId);
-        store.set(worldPath + ".setup-in-progress", false);
-        saveStore("Could not clear the spawn setup reservation after terrain loading failed.");
-        retrySetupLater(worldId);
-        if (logDeferredOnce(worldId,
-            "Spawn Kit setup deferred: terrain loading failed: " + error.getMessage() + ".")) {
-          plugin.getLogger().log(Level.WARNING, "Spawn Kit setup could not load search chunks.", error);
+  private void ensureZone(World world) {
+    String worldPath = "worlds." + world.getUID();
+    switch (classify(worldPath)) {
+      case CURRENT -> {
+        String worldId = world.getUID().toString();
+        applyStoredZone(world, worldPath);
+        if (!pendingSetups.contains(worldId)) {
+          int repaired = repairZone(world, worldPath);
+          if (repaired > 0) {
+            plugin.getLogger().info("Repaired " + repaired
+                + " protected spawn block(s) in world " + world.getName() + ".");
+          }
         }
       }
-      return;
+      case IN_PROGRESS -> {
+        if (interruptedLogged.add(world.getUID().toString())) {
+          plugin.getLogger().warning(
+              "Spawn zone setup was interrupted for world " + world.getName()
+                  + "; refusing to build again until the world/setup record is reviewed.");
+        }
+      }
+      case LEGACY_UNMIGRATED -> logUpgrade(world);
+      case FRESH -> beginBuild(world, worldPath, "zone", false, false, false, null);
     }
   }
 
-  private CompletableFuture<java.util.List<Chunk>> loadSearchChunks(World world) {
+  private void applyStoredZone(World world, String worldPath) {
+    int sx = store.getInt(worldPath + ".spawn-x");
+    int sy = store.getInt(worldPath + ".spawn-y");
+    int sz = store.getInt(worldPath + ".spawn-z");
+    protection.setRegion(world, layout.protectedRegion().translated(sx, sy, sz));
+    spawnControl.setSpawn(world, new Location(world, sx + 0.5, sy, sz + 0.5));
+    Location current = world.getSpawnLocation();
+    if (current.getBlockX() != sx || current.getBlockY() != sy || current.getBlockZ() != sz) {
+      world.setSpawnLocation(sx, sy, sz);
+    }
+    applySpawnRadius(world, worldPath);
+  }
+
+  private int repairZone(World world, String worldPath) {
+    return builder.repairZone(world, layout,
+        store.getInt(worldPath + ".spawn-x"),
+        store.getInt(worldPath + ".spawn-y"),
+        store.getInt(worldPath + ".spawn-z"));
+  }
+
+  // ---- Test-only house kit ------------------------------------------------------------------
+
+  private void ensureKit(World world) {
+    if (!houseConfigured()) return;
+    String worldPath = "worlds." + world.getUID();
+    if (store.getBoolean(worldPath + ".setup-complete", false)) return;
+    SpawnZonePolicy.SetupState state = classify(worldPath);
+    if (state == SpawnZonePolicy.SetupState.LEGACY_UNMIGRATED) {
+      logUpgrade(world);
+      return;
+    }
+    if (state != SpawnZonePolicy.SetupState.CURRENT) return; // wait for the protected zone
+    String worldId = world.getUID().toString();
+    if (pendingSetups.contains(worldId)) return;
+    SpawnRegion core = layout.protectedRegion().translated(
+        store.getInt(worldPath + ".spawn-x"),
+        store.getInt(worldPath + ".spawn-y"),
+        store.getInt(worldPath + ".spawn-z"));
+    beginBuild(world, worldPath, "house", true, chestConfigured(), true, core);
+  }
+
+  // ---- Build --------------------------------------------------------------------------------
+
+  private void beginBuild(World world, String worldPath, String kind, boolean houseEnabled,
+                          boolean chestEnabled, boolean supplies, SpawnRegion existingCore) {
+    String worldId = world.getUID().toString();
+    if (System.nanoTime() < retryAfterNanos.getOrDefault(worldId, 0L)) return;
+
+    store.set(worldPath + ".setup-in-progress", true);
+    if (!saveStore("Could not reserve the spawn setup record; nothing was built.")) {
+      store.set(worldPath + ".setup-in-progress", false);
+      retryLater(worldId);
+      return;
+    }
+    pendingSetups.add(worldId);
+
+    CompletableFuture<List<Chunk>> chunks;
+    try {
+      chunks = loadBuildChunks(world);
+    } catch (RuntimeException error) {
+      abandonBuild(worldPath, worldId, "terrain loading could not start");
+      if (logDeferredOnce(worldId, "Spawn " + kind + " build deferred: terrain loading failed.")) {
+        plugin.getLogger().log(Level.WARNING, "Spawn build could not start chunk loading.", error);
+      }
+      return;
+    }
+    chunks.whenComplete((loaded, error) -> Bukkit.getScheduler().runTask(plugin,
+        () -> afterChunksLoaded(world, worldPath, kind, houseEnabled, chestEnabled, supplies,
+            existingCore, loaded, error)));
+  }
+
+  private CompletableFuture<List<Chunk>> loadBuildChunks(World world) {
     Location spawn = world.getSpawnLocation();
-    int extent = shelterSearchRadius + 4;
+    int extent = layout.wallRadius() + 2;
     SpawnKitPolicy.ChunkBounds bounds =
-        SpawnKitPolicy.searchChunkBounds(spawn.getBlockX(), spawn.getBlockZ(), extent);
-    java.util.List<CompletableFuture<Chunk>> futures = new java.util.ArrayList<>();
+        SpawnKitPolicy.chunkBounds(spawn.getBlockX(), spawn.getBlockZ(), extent);
+    List<CompletableFuture<Chunk>> futures = new ArrayList<>();
     for (int chunkX = bounds.minX(); chunkX <= bounds.maxX(); chunkX++) {
       for (int chunkZ = bounds.minZ(); chunkZ <= bounds.maxZ(); chunkZ++) {
         futures.add(world.getChunkAtAsync(chunkX, chunkZ, true, true));
       }
     }
-    CompletableFuture<?>[] pending = futures.toArray(CompletableFuture[]::new);
-    return CompletableFuture.allOf(pending)
+    return CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new))
         .thenApply(ignored -> futures.stream().map(CompletableFuture::join).toList());
   }
 
-  private void finishSetup(World world, String worldPath, String worldId,
-                           boolean houseEnabled, boolean markerEnabled, boolean chestEnabled,
-                           java.util.List<Chunk> chunks, Throwable error) {
-    pendingSetups.remove(worldId);
+  private void afterChunksLoaded(World world, String worldPath, String kind, boolean houseEnabled,
+                                 boolean chestEnabled, boolean supplies, SpawnRegion existingCore,
+                                 List<Chunk> chunks, Throwable error) {
+    String worldId = world.getUID().toString();
     if (error != null) {
-      store.set(worldPath + ".setup-in-progress", false);
-      saveStore("Could not clear the spawn setup reservation after terrain loading failed.");
-      retrySetupLater(worldId);
-      String failure = "Spawn Kit setup deferred: terrain loading failed: "
-          + rootCause(error).getMessage() + ".";
-      if (logDeferredOnce(worldId, failure)) {
-        plugin.getLogger().log(Level.WARNING, "Spawn Kit setup could not load search chunks.", rootCause(error));
+      abandonBuild(worldPath, worldId, "terrain loading failed");
+      if (logDeferredOnce(worldId,
+          "Spawn " + kind + " build deferred: terrain loading failed: "
+              + rootCause(error).getMessage() + ".")) {
+        plugin.getLogger().log(Level.WARNING, "Spawn build could not load terrain.", rootCause(error));
       }
       return;
     }
 
-    java.util.List<Chunk> ticketed = new java.util.ArrayList<>();
+    List<Chunk> ticketed = new ArrayList<>();
+    boolean released = false;
     try {
       for (Chunk chunk : chunks) {
         if (!world.addPluginChunkTicket(chunk.getX(), chunk.getZ(), plugin)) {
-          throw new IllegalStateException("Could not retain a loaded spawn search chunk.");
+          throw new IllegalStateException("Could not retain a loaded build chunk.");
         }
         ticketed.add(chunk);
       }
-      SpawnKitShelter.BuildResult result = shelter.build(
-          world, houseEnabled, markerEnabled, chestEnabled, Bukkit.getSpawnRadius(), stacks);
-      if (result.spawn() == null) {
-        store.set(worldPath + ".setup-in-progress", false);
-        saveStore("Could not clear the spawn setup reservation after no safe site was found.");
-        retrySetupLater(worldId);
-        logDeferredOnce(worldId, "Spawn Kit setup deferred: " + result.diagnostics() + ".");
+      SpawnZoneBuilder.Prepared prepared = builder.prepare(world, layout, houseEnabled, chestEnabled,
+          supplies ? stacks : List.of(), existingCore);
+      if (!prepared.accepted()) {
+        releaseTickets(world, ticketed);
+        released = true;
+        abandonBuild(worldPath, worldId, "site refused");
+        logDeferredOnce(worldId, "Spawn " + kind + " build deferred: " + prepared.defect() + ".");
         return;
       }
-      store.set(worldPath + ".setup-complete", true);
-      store.set(worldPath + ".setup-in-progress", false);
-      store.set(worldPath + ".house-built", houseEnabled);
-      store.set(worldPath + ".chest-placed", chestEnabled);
-      store.set(worldPath + ".spawn-x", result.spawn().getBlockX());
-      store.set(worldPath + ".spawn-y", result.spawn().getBlockY());
-      store.set(worldPath + ".spawn-z", result.spawn().getBlockZ());
-      if (!saveStore("Spawn shelter was built, but its location could not be recorded.")) {
-        plugin.getLogger().severe(
-            "Spawn shelter placement completed without a durable record; verify this world before restarting.");
+
+      store.set(worldPath + ".spawn-x", world.getSpawnLocation().getBlockX());
+      store.set(worldPath + ".spawn-y", prepared.spawnY());
+      store.set(worldPath + ".spawn-z", world.getSpawnLocation().getBlockZ());
+      store.set(worldPath + ".layout-version", LAYOUT_VERSION);
+      if (!saveStore("Could not persist the spawn zone location; nothing was built.")) {
+        releaseTickets(world, ticketed);
+        abandonBuild(worldPath, worldId, "persistence failed");
+        return;
       }
-      retryAfterNanos.remove(worldId);
-      retryAttempts.remove(worldId);
-      lastNoCandidateSummary.remove(worldId);
-      incompleteSetupReported.remove(worldId);
+
+      builder.execute(prepared, () -> {
+        releaseTickets(world, ticketed);
+        completeBuild(world, worldPath, kind, houseEnabled, chestEnabled);
+      });
     } catch (RuntimeException failure) {
-      store.set(worldPath + ".setup-in-progress", false);
-      saveStore("Could not clear the spawn setup reservation after placement failed.");
-      retrySetupLater(worldId);
-      plugin.getLogger().log(Level.SEVERE, "Spawn Kit setup failed before it could be recorded.", failure);
-    } finally {
-      for (Chunk chunk : ticketed) {
-        world.removePluginChunkTicket(chunk.getX(), chunk.getZ(), plugin);
+      if (!released) releaseTickets(world, ticketed);
+      abandonBuild(worldPath, worldId, "placement failed");
+      plugin.getLogger().log(Level.WARNING, "Spawn " + kind + " setup failed.", failure);
+    }
+  }
+
+  private void releaseTickets(World world, List<Chunk> ticketed) {
+    for (Chunk chunk : ticketed) {
+      world.removePluginChunkTicket(chunk.getX(), chunk.getZ(), plugin);
+    }
+  }
+
+  private void completeBuild(World world, String worldPath, String kind,
+                             boolean houseEnabled, boolean chestEnabled) {
+    String worldId = world.getUID().toString();
+    pendingSetups.remove(worldId);
+    store.set(worldPath + ".spawn-zone-complete", true);
+    store.set(worldPath + ".layout-version", LAYOUT_VERSION);
+    if (houseEnabled) {
+      store.set(worldPath + ".setup-complete", true);
+      store.set(worldPath + ".house-built", true);
+    }
+    if (chestEnabled) {
+      store.set(worldPath + ".chest-placed", true);
+    }
+    store.set(worldPath + ".setup-in-progress", false);
+    saveStore("Spawn " + kind + " was built, but the record could not be saved; verify before restarting.");
+
+    applyStoredZone(world, worldPath);
+    retryAfterNanos.remove(worldId);
+    retryAttempts.remove(worldId);
+    lastDeferral.remove(worldId);
+    interruptedLogged.remove(worldId);
+    upgradeLogged.remove(worldId);
+    teleportPlayersOutOfFootprint(world, worldPath);
+    plugin.getLogger().info("Built the " + kind + " spawn layout in world " + world.getName() + ".");
+  }
+
+  private void abandonBuild(String worldPath, String worldId, String reason) {
+    pendingSetups.remove(worldId);
+    store.set(worldPath + ".setup-in-progress", false);
+    saveStore("Could not clear the spawn setup reservation after " + reason + ".");
+    retryLater(worldId);
+  }
+
+  private void teleportPlayersOutOfFootprint(World world, String worldPath) {
+    int sx = store.getInt(worldPath + ".spawn-x");
+    int sy = store.getInt(worldPath + ".spawn-y");
+    int sz = store.getInt(worldPath + ".spawn-z");
+    SpawnRegion footprint = layout.footprint().translated(sx, sy, sz);
+    Location spawn = new Location(world, sx + 0.5, sy, sz + 0.5);
+    for (var player : world.getPlayers()) {
+      Location location = player.getLocation();
+      if (footprint.contains(location.getBlockX(), location.getBlockY(), location.getBlockZ())) {
+        player.teleport(spawn);
       }
     }
   }
 
+  // ---- Explicit command ---------------------------------------------------------------------
+
+  /** Builds (or migrates) the layout for a world on operator request. */
+  String buildNow(World world, boolean withSupplies) {
+    if (world.getEnvironment() != World.Environment.NORMAL) {
+      return "The spawn layout is only built in the Overworld.";
+    }
+    if (pendingSetups.contains(world.getUID().toString())) {
+      return "A spawn build is already in progress for this world.";
+    }
+    if (withSupplies && !chestConfigured()) {
+      return "Supplies were requested but spawn-kit.house.chest is not configured.";
+    }
+    String worldPath = "worlds." + world.getUID();
+    SpawnRegion existingCore = null;
+    if (store.getBoolean(worldPath + ".spawn-zone-complete", false)) {
+      existingCore = layout.protectedRegion().translated(
+          store.getInt(worldPath + ".spawn-x"),
+          store.getInt(worldPath + ".spawn-y"),
+          store.getInt(worldPath + ".spawn-z"));
+    }
+    upgradeLogged.remove(world.getUID().toString());
+    beginBuild(world, worldPath, "operator", true, chestConfigured(), withSupplies, existingCore);
+    return "Spawn layout build started for world " + world.getName()
+        + (withSupplies ? " (with supplies)." : " (without supplies).");
+  }
+
+  // ---- Spawn radius handling ----------------------------------------------------------------
+
+  private void applySpawnRadius(World world, String worldPath) {
+    if (!manageSpawnRadius()) {
+      restoreSpawnRadius(world);
+      return;
+    }
+    if (!store.contains(worldPath + ".original-respawn-radius")) {
+      Integer current = world.getGameRuleValue(GameRules.RESPAWN_RADIUS);
+      store.set(worldPath + ".original-respawn-radius", current == null ? 10 : current);
+      saveStore("Could not record the original respawn radius; it will not be restored later.");
+    }
+    world.setGameRule(GameRules.RESPAWN_RADIUS, SpawnZonePolicy.MANAGED_RESPAWN_RADIUS);
+  }
+
+  private void restoreSpawnRadius(World world) {
+    String worldPath = "worlds." + world.getUID();
+    if (!store.contains(worldPath + ".original-respawn-radius")) return;    world.setGameRule(GameRules.RESPAWN_RADIUS,
+        store.getInt(worldPath + ".original-respawn-radius"));
+    store.set(worldPath + ".original-respawn-radius", null);
+    saveStore("Could not clear the recorded respawn radius after restoring it.");
+  }
+
+  /** Restores the respawn radius for every loaded Overworld when the plugin is disabled. */
+  void restoreSpawnRadiusForShutdown() {
+    for (World world : Bukkit.getWorlds()) {
+      if (world.getEnvironment() == World.Environment.NORMAL) {
+        restoreSpawnRadius(world);
+      }
+    }
+  }
+
+  // ---- Marker -------------------------------------------------------------------------------
+
   private void updateSpawnMarker(World world) {
-    if (!plugin.getConfig().getBoolean("spawn-kit.spawn-marker.enabled", false)) return;
     String worldId = world.getUID().toString();
     long now = System.nanoTime();
     if (now < nextMarkerUpdateNanos.getOrDefault(worldId, 0L)) return;
-    Location spawn = world.getSpawnLocation();
+    String worldPath = "worlds." + world.getUID();
+    Location spawn = store.getBoolean(worldPath + ".spawn-zone-complete", false)
+        ? new Location(world, store.getInt(worldPath + ".spawn-x"),
+            store.getInt(worldPath + ".spawn-y"), store.getInt(worldPath + ".spawn-z"))
+        : world.getSpawnLocation();
     String label = plugin.getConfig().getString("spawn-kit.spawn-marker.name", "World Spawn");
     if (BlueMapSpawnMarker.update(plugin, world,
         spawn.getBlockX(), spawn.getBlockY(), spawn.getBlockZ(), label)) {
@@ -227,10 +428,40 @@ final class SpawnKitManager {
     }
   }
 
-  private void retrySetupLater(String worldId) {
-    int attempt = retryAttempts.merge(worldId, 1, Integer::sum) - 1;
+  // ---- Records and logging ------------------------------------------------------------------
+
+  private SpawnZonePolicy.SetupState classify(String worldPath) {
+    boolean hasLayoutVersion = store.getInt(worldPath + ".layout-version", 0) >= LAYOUT_VERSION;
+    boolean hasLegacy = store.contains(worldPath + ".setup-complete")
+        || store.contains(worldPath + ".issued")
+        || store.contains(worldPath + ".x");
+    boolean inProgress = store.getBoolean(worldPath + ".setup-in-progress", false);
+    boolean zoneComplete = store.getBoolean(worldPath + ".spawn-zone-complete", false);
+    return SpawnZonePolicy.classifySetup(hasLayoutVersion, hasLegacy, inProgress, zoneComplete);
+  }
+
+  private void logUpgrade(World world) {
+    if (!upgradeLogged.add(world.getUID().toString())) return;
+    plugin.getLogger().warning(
+        "World " + world.getName() + " has a 1.1.x spawn kit record. This build does not migrate"
+            + " it automatically. Review the old shelter, then run '/spawnkit build confirm' in"
+            + " that world to place the new protected spawn layout (add 'supplies' only to hand out"
+            + " a new chest). Clear plugins/AwepeepsSpawnKit/issued-kits.yml after a fresh world"
+            + " reset.");
+  }
+
+  private void retryLater(String worldId) {
+    retryAttempts.merge(worldId, 1, Integer::sum);
+    int attempt = retryAttempts.get(worldId) - 1;
     retryAfterNanos.put(worldId,
         System.nanoTime() + TimeUnit.SECONDS.toNanos(SpawnKitPolicy.retryDelaySeconds(attempt)));
+  }
+
+  private boolean logDeferredOnce(String worldId, String summary) {
+    String reason = summary.replaceAll("=\\d+", "");
+    if (reason.equals(lastDeferral.put(worldId, reason))) return false;
+    plugin.getLogger().info(summary);
+    return true;
   }
 
   private Throwable rootCause(Throwable error) {
@@ -241,175 +472,6 @@ final class SpawnKitManager {
     return cause;
   }
 
-  private boolean logDeferredOnce(String worldId, String summary) {
-    String reason = summary.replaceAll("=\\d+", "");
-    if (reason.equals(lastNoCandidateSummary.put(worldId, reason))) return false;
-    plugin.getLogger().info(summary);
-    return true;
-  }
-
-  private void ensureChest(World world) {
-    String worldId = world.getUID().toString();
-    long now = System.nanoTime();
-    if (now < retryAfterNanos.getOrDefault(worldId, 0L)) return;
-    String worldPath = "worlds." + world.getUID();
-    boolean persistedTombstone = store.getBoolean(worldPath + ".issued", false);
-    boolean hasSavedPosition = store.contains(worldPath + ".x")
-        && store.contains(worldPath + ".y") && store.contains(worldPath + ".z");
-    if (persistedTombstone || hasSavedPosition) {
-      if (!persistedTombstone) reserveIssuance(worldPath);
-      return;
-    }
-
-    int spawnRadius = Bukkit.getSpawnRadius();
-    Block discovered = findOwnedNearSpawn(world, SpawnKitPolicy.MAX_SEARCH_RADIUS);
-    if (discovered != null) {
-      reserveIssuance(worldPath);
-      remember(world, discovered);
-      return;
-    }
-
-    int permittedSearchRadius = SpawnKitPolicy.searchRadius(spawnRadius, SEARCH_RADIUS);
-    if (permittedSearchRadius < 0) {
-      retryLater(worldId, now);
-      logDeferredOnce(worldId,
-          "Spawn Kit placement deferred: spawn protection covers the maximum search radius.");
-      return;
-    }
-    SearchResult search = findSafeCandidate(world, permittedSearchRadius, spawnRadius);
-    if (search.block() == null) {
-      retryLater(worldId, now);
-      logDeferredOnce(worldId, "Spawn Kit placement deferred: " + search.summary() + ".");
-      return;
-    }
-
-    // Reserve before editing the world: a persistence failure must leave terrain untouched.
-    if (!reserveIssuance(worldPath)) return;
-    Block candidate = search.block();
-    candidate.setType(Material.CHEST, false);
-    BlockState state = candidate.getState();
-    if (!(state instanceof Chest chest)) {
-      candidate.setType(Material.AIR, false);
-      return;
-    }
-    chest.getPersistentDataContainer().set(ownedKey, PersistentDataType.BYTE, (byte) 1);
-    if (!chest.update(true, false)) {
-      if (candidate.getType() == Material.CHEST) candidate.setType(Material.AIR, false);
-      return;
-    }
-
-    remember(world, candidate);
-    BlockState placedState = candidate.getState();
-    if (placedState instanceof Chest placedChest) {
-      SpawnKitContents.fill(placedChest.getBlockInventory(), stacks);
-    }
-    retryAfterNanos.remove(worldId);
-  }
-
-  private void retryLater(String worldId, long now) {
-    retryAfterNanos.put(worldId, now + TimeUnit.SECONDS.toNanos(30));
-  }
-
-  private Block findOwnedNearSpawn(World world, int radius) {
-    var spawn = world.getSpawnLocation();
-    int centerX = spawn.getBlockX();
-    int centerY = spawn.getBlockY();
-    int centerZ = spawn.getBlockZ();
-    for (int chunkX = (centerX - radius) >> 4; chunkX <= (centerX + radius) >> 4; chunkX++) {
-      for (int chunkZ = (centerZ - radius) >> 4; chunkZ <= (centerZ + radius) >> 4; chunkZ++) {
-        if (!world.isChunkLoaded(chunkX, chunkZ)) continue;
-        for (var state : world.getChunkAt(chunkX, chunkZ).getTileEntities()) {
-          if (!(state instanceof Chest chest)) continue;
-          Block block = chest.getBlock();
-          if (Math.abs(block.getX() - centerX) <= radius
-              && Math.abs(block.getZ() - centerZ) <= radius
-              && Math.abs(block.getY() - centerY) <= DISCOVERY_Y
-              && isOwned(block)) return block;
-        }
-      }
-    }
-    return null;
-  }
-
-  private SearchResult findSafeCandidate(World world, int radius, int protectionRadius) {
-    var spawn = world.getSpawnLocation();
-    int centerX = spawn.getBlockX();
-    int centerY = spawn.getBlockY();
-    int centerZ = spawn.getBlockZ();
-    List<int[]> offsets = new ArrayList<>();
-    for (int dx = -radius; dx <= radius; dx++) {
-      for (int dz = -radius; dz <= radius; dz++) {
-        if (dx * dx + dz * dz <= radius * radius
-            && SpawnKitPolicy.outsideProtection(dx, dz, protectionRadius)) {
-          offsets.add(new int[] {dx, dz});
-        }
-      }
-    }
-    offsets.sort(Comparator.comparingInt(offset -> offset[0] * offset[0] + offset[1] * offset[1]));
-    int loadedColumns = 0;
-    int surfacesInRange = 0;
-    int safeFloors = 0;
-    int clearSpots = 0;
-    for (int[] offset : offsets) {
-      int x = centerX + offset[0];
-      int z = centerZ + offset[1];
-      if (!world.isChunkLoaded(x >> 4, z >> 4)) continue;
-      loadedColumns++;
-      int surfaceBlockY = world.getHighestBlockYAt(x, z, HeightMap.MOTION_BLOCKING_NO_LEAVES);
-      Integer y = SpawnKitPolicy.surfacePlacementY(
-          surfaceBlockY, centerY, world.getMinHeight(), world.getMaxHeight());
-      if (y == null) continue;
-      surfacesInRange++;
-      Block floor = world.getBlockAt(x, y - 1, z);
-      Material floorType = floor.getType();
-      boolean leaves = floorType.name().equals("LEAVES") || floorType.name().endsWith("_LEAVES");
-      boolean hazardous = UNSAFE_FLOORS.contains(floorType);
-      if (!SpawnKitPolicy.safeFloor(floorType.isSolid(), floor.isLiquid(), leaves, hazardous)) continue;
-      safeFloors++;
-      Block spot = world.getBlockAt(x, y, z);
-      Block headroom = world.getBlockAt(x, y + 1, z);
-      boolean nextToChest = nextToChest(spot);
-      if (!SpawnKitPolicy.safePlacement(
-          spot.getType().isAir(), headroom.getType().isAir(),
-          world.getWorldBorder().isInside(spot.getLocation()), nextToChest)) continue;
-      clearSpots++;
-      return new SearchResult(spot, offsets.size(), loadedColumns, surfacesInRange, safeFloors, clearSpots);
-    }
-    return new SearchResult(null, offsets.size(), loadedColumns, surfacesInRange, safeFloors, clearSpots);
-  }
-
-  private boolean nextToChest(Block block) {
-    for (Block adjacent : List.of(
-        block.getRelative(1, 0, 0), block.getRelative(-1, 0, 0),
-        block.getRelative(0, 0, 1), block.getRelative(0, 0, -1))) {
-      if (!adjacent.getWorld().isChunkLoaded(adjacent.getX() >> 4, adjacent.getZ() >> 4)) return true;
-      Material type = adjacent.getType();
-      if (type == Material.CHEST || type == Material.TRAPPED_CHEST) return true;
-    }
-    return false;
-  }
-
-  private boolean isOwned(Block block) {
-    if (block.getType() != Material.CHEST) return false;
-    BlockState state = block.getState();
-    return state instanceof Chest chest
-        && chest.getPersistentDataContainer().has(ownedKey, PersistentDataType.BYTE);
-  }
-
-  private void remember(World world, Block chest) {
-    String worldPath = "worlds." + world.getUID();
-    store.set(worldPath + ".name", world.getName());
-    store.set(worldPath + ".x", chest.getX());
-    store.set(worldPath + ".y", chest.getY());
-    store.set(worldPath + ".z", chest.getZ());
-    saveStore("Could not persist test supply chest location; ownership marker remains on the chest.");
-  }
-
-  private boolean reserveIssuance(String worldPath) {
-    store.set(worldPath + ".issued", true);
-    return saveStore("Could not persist test supply issuance; no chest was placed.");
-  }
-
   private boolean saveStore(String failureMessage) {
     try {
       store.save(storeFile);
@@ -417,25 +479,6 @@ final class SpawnKitManager {
     } catch (IOException error) {
       plugin.getLogger().log(Level.WARNING, failureMessage, error);
       return false;
-    }
-  }
-
-  private record SearchResult(
-      Block block, int columns, int loadedColumns, int surfacesInRange, int safeFloors, int clearSpots) {
-    private String summary() {
-      Map<String, Integer> rejections = new HashMap<>();
-      rejections.put("unloaded chunks", columns - loadedColumns);
-      rejections.put("unsafe floors", surfacesInRange - safeFloors);
-      rejections.put("height limits", loadedColumns - surfacesInRange);
-      rejections.put("occupied or adjacent chest", safeFloors - clearSpots);
-      String dominant = rejections.entrySet().stream()
-          .filter(entry -> entry.getValue() > 0)
-          .sorted(Map.Entry.<String, Integer>comparingByValue().reversed())
-          .limit(2)
-          .map(entry -> entry.getKey() + "=" + entry.getValue())
-          .collect(java.util.stream.Collectors.joining(", "));
-      return "candidates checked=" + columns
-          + (dominant.isEmpty() ? "" : "; rejected: " + dominant);
     }
   }
 }
