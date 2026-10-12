@@ -4,6 +4,7 @@ spawn-kit:
   starts-on: ""
   expires-on: ""
   timezone: ""
+  # Maximum horizontal site-search radius around the existing world spawn (8-32).
   search-radius: 16
   spawn-marker:
     enabled: false
