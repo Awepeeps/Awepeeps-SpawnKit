@@ -4,4 +4,11 @@ spawn-kit:
   starts-on: ""
   expires-on: ""
   timezone: ""
-  items: []
+  spawn-marker:
+    enabled: false
+    name: "World Spawn"
+  house:
+    enabled: false
+    chest:
+      enabled: false
+      items: []

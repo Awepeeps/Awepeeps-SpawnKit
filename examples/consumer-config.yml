@@ -4,8 +4,15 @@ spawn-kit:
   starts-on: "2026-01-01"
   expires-on: "2026-12-31"
   timezone: "UTC"
-  items:
-    - material: TORCH
-      amount: 32
-    - material: BREAD
-      amount: 16
+  spawn-marker:
+    enabled: true
+    name: "World Spawn"
+  house:
+    enabled: true
+    chest:
+      enabled: true
+      items:
+        - material: TORCH
+          amount: 32
+        - material: BREAD
+          amount: 16

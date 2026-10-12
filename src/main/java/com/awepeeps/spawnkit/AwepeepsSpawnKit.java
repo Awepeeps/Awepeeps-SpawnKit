@@ -9,14 +9,16 @@ public final class AwepeepsSpawnKit extends JavaPlugin {
     final SpawnKitContents contents;
     try {
       contents = new SpawnKitContents(
-          getConfig().getMapList("spawn-kit.items"), SpawnKitContents::resolveMaterial);
+          getConfig().getMapList("spawn-kit.house.chest.items"), SpawnKitContents::resolveMaterial);
     } catch (IllegalArgumentException error) {
       getLogger().severe("Spawn Kit configuration is invalid: " + error.getMessage());
       getServer().getPluginManager().disablePlugin(this);
       return;
     }
-    if (getConfig().getBoolean("spawn-kit.enabled", false) && contents.isEmpty()) {
-      getLogger().severe("Spawn Kit is enabled but spawn-kit.items is empty.");
+    if (getConfig().getBoolean("spawn-kit.enabled", false)
+        && getConfig().getBoolean("spawn-kit.house.chest.enabled", false)
+        && contents.isEmpty()) {
+      getLogger().severe("Spawn Kit chest is enabled but spawn-kit.house.chest.items is empty.");
       getServer().getPluginManager().disablePlugin(this);
       return;
     }

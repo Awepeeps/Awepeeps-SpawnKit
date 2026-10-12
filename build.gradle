@@ -3,7 +3,7 @@ plugins {
 }
 
 group = 'com.awepeeps'
-version = '1.0.0'
+version = '1.1.0'
 
 repositories {
     mavenCentral()
@@ -11,10 +11,15 @@ repositories {
         name = 'papermc'
         url = 'https://repo.papermc.io/repository/maven-public/'
     }
+    maven {
+        name = 'bluecolored'
+        url = 'https://repo.bluecolored.de/releases'
+    }
 }
 
 dependencies {
     compileOnly 'io.papermc.paper:paper-api:26.3.build.175-stable'
+    compileOnly 'de.bluecolored:bluemap-api:2.7.7'
     testImplementation 'io.papermc.paper:paper-api:26.3.build.175-stable'
     testImplementation 'org.junit.jupiter:junit-jupiter:5.12.2'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'

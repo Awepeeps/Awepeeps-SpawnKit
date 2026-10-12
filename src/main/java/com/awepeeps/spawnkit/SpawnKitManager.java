@@ -13,6 +13,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import org.bukkit.Bukkit;
 import org.bukkit.HeightMap;
+import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.World;
@@ -34,16 +35,19 @@ final class SpawnKitManager {
   private final JavaPlugin plugin;
   private final List<SpawnKitContents.Stack> stacks;
   private final NamespacedKey ownedKey;
+  private final SpawnKitShelter shelter;
   private final File storeFile;
   private final YamlConfiguration store;
   private final Map<String, Long> retryAfterNanos = new HashMap<>();
   private final Map<String, Long> nextNoCandidateLogNanos = new HashMap<>();
+  private final Map<String, Long> nextMarkerUpdateNanos = new HashMap<>();
   private boolean invalidConfigLogged;
 
   SpawnKitManager(JavaPlugin plugin, List<SpawnKitContents.Stack> stacks) {
     this.plugin = plugin;
     this.stacks = stacks;
     this.ownedKey = new NamespacedKey(plugin, "spawn_kit_chest");
+    this.shelter = new SpawnKitShelter(plugin, ownedKey);
     this.storeFile = new File(plugin.getDataFolder(), "issued-kits.yml");
     this.store = YamlConfiguration.loadConfiguration(storeFile);
   }
@@ -68,7 +72,64 @@ final class SpawnKitManager {
     World world = Bukkit.getWorlds().stream()
         .filter(candidate -> candidate.getEnvironment() == World.Environment.NORMAL)
         .findFirst().orElse(null);
-    if (world != null) ensureChest(world);
+    if (world != null) ensureWorldSetup(world);
+  }
+
+  private void ensureWorldSetup(World world) {
+    String worldPath = "worlds." + world.getUID();
+    boolean houseEnabled = plugin.getConfig().getBoolean("spawn-kit.house.enabled", false);
+    boolean markerEnabled = plugin.getConfig().getBoolean("spawn-kit.spawn-marker.enabled", false);
+    boolean chestEnabled = plugin.getConfig().getBoolean("spawn-kit.house.chest.enabled", false);
+    if (!houseEnabled && !markerEnabled && chestEnabled) {
+      ensureChest(world);
+      return;
+    }
+    if (!houseEnabled && !markerEnabled) return;
+
+    if (!store.getBoolean(worldPath + ".setup-complete", false)) {
+      long now = System.nanoTime();
+      String worldId = world.getUID().toString();
+      if (now < retryAfterNanos.getOrDefault(worldId, 0L)) return;
+      Location spawn = shelter.build(world, houseEnabled, markerEnabled, chestEnabled, stacks);
+      if (spawn == null) {
+        retryAfterNanos.put(worldId, now + TimeUnit.SECONDS.toNanos(30));
+        if (now >= nextNoCandidateLogNanos.getOrDefault(worldId, 0L)) {
+          plugin.getLogger().info("Spawn Kit setup deferred: no safe, flat, loaded site was found near world spawn.");
+          nextNoCandidateLogNanos.put(worldId, now + TimeUnit.MINUTES.toNanos(5));
+        }
+        return;
+      }
+      store.set(worldPath + ".setup-complete", true);
+      store.set(worldPath + ".house-built", houseEnabled);
+      store.set(worldPath + ".chest-placed", chestEnabled);
+      store.set(worldPath + ".spawn-x", spawn.getBlockX());
+      store.set(worldPath + ".spawn-y", spawn.getBlockY());
+      store.set(worldPath + ".spawn-z", spawn.getBlockZ());
+      if (!saveStore("Spawn shelter was built, but its location could not be recorded.")) {
+        plugin.getLogger().severe(
+            "Spawn shelter placement completed without a durable record; verify this world before restarting.");
+      }
+      retryAfterNanos.remove(worldId);
+      nextNoCandidateLogNanos.remove(worldId);
+    }
+
+    if (markerEnabled) {
+      int x = store.getInt(worldPath + ".spawn-x", world.getSpawnLocation().getBlockX());
+      int y = store.getInt(worldPath + ".spawn-y", world.getSpawnLocation().getBlockY());
+      int z = store.getInt(worldPath + ".spawn-z", world.getSpawnLocation().getBlockZ());
+      Block spawnFloor = world.getBlockAt(x, y - 1, z);
+      if (store.getBoolean(worldPath + ".house-built", false)
+          && spawnFloor.getType() == Material.OAK_PLANKS) {
+        spawnFloor.setType(Material.LODESTONE, false);
+      }
+      long now = System.nanoTime();
+      String worldId = world.getUID().toString();
+      if (now >= nextMarkerUpdateNanos.getOrDefault(worldId, 0L)) {
+        String label = plugin.getConfig().getString("spawn-kit.spawn-marker.name", "World Spawn");
+        BlueMapSpawnMarker.update(plugin, world, x, y, z, label);
+        nextMarkerUpdateNanos.put(worldId, now + TimeUnit.MINUTES.toNanos(1));
+      }
+    }
   }
 
   private void ensureChest(World world) {
