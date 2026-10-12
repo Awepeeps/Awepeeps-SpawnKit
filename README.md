@@ -68,9 +68,12 @@ example with neutral items and dates that should be replaced for each server.
 ## Placement and reset behavior
 
 For a shelter, the plugin searches already-loaded terrain within a bounded
-radius around the primary Overworld spawn. It requires a flat, safe, clear
-footprint and does not load chunks or overwrite structures. If no safe location
-is available, it retries later. The consuming server should set
+radius around the primary Overworld spawn. It levels a small natural-ground
+height variation of up to two blocks with a cobblestone foundation, while
+requiring safe ground and clear building space. It does not load chunks or
+overwrite structures. If no safe location is available, it retries later. The
+consuming server should load the relevant spawn terrain before players arrive.
+It should set
 `spawn-protection` to `2` in `server.properties` for a 5-by-5 protected block
 area centered on the resulting spawn point; the plugin does not modify server
 properties.
@@ -92,4 +95,4 @@ bash ./gradlew --no-daemon clean test build
 ```
 
 The reproducible jar is written to
-`build/libs/awepeeps-spawn-kit-1.1.0.jar`.
+`build/libs/awepeeps-spawn-kit-1.1.1.jar`.

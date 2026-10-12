@@ -64,6 +64,13 @@ class SpawnKitPolicyTest {
   }
 
   @Test
+  void shelterCanLevelSmallTerrainVariationsButRejectsSteepSites() {
+    assertTrue(SpawnKitPolicy.canLevelShelterTerrain(66, 68));
+    assertFalse(SpawnKitPolicy.canLevelShelterTerrain(65, 68));
+    assertFalse(SpawnKitPolicy.canLevelShelterTerrain(68, 66));
+  }
+
+  @Test
   void configuredKitItemsAreParsedAndStackAmountsPreserved() {
     SpawnKitContents kit = new SpawnKitContents(List.of(
         Map.of("material", "PAPER", "amount", 99),
