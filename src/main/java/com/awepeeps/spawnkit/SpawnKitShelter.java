@@ -27,6 +27,11 @@ import org.bukkit.plugin.java.JavaPlugin;
 final class SpawnKitShelter {
   private static final int HOUSE_RADIUS = 3;
   private static final int SEARCH_RADIUS = 8;
+  private static final Set<Material> NATURAL_FLOORS = Set.of(
+      Material.GRASS_BLOCK, Material.DIRT, Material.COARSE_DIRT, Material.ROOTED_DIRT,
+      Material.PODZOL, Material.MYCELIUM, Material.MUD, Material.CLAY, Material.SAND,
+      Material.RED_SAND, Material.GRAVEL, Material.SNOW_BLOCK, Material.STONE,
+      Material.ANDESITE, Material.DIORITE, Material.GRANITE, Material.TUFF, Material.DEEPSLATE);
   private static final Set<Material> UNSAFE_FLOORS = Set.of(
       Material.CACTUS, Material.MAGMA_BLOCK, Material.CAMPFIRE, Material.SOUL_CAMPFIRE,
       Material.FIRE, Material.SOUL_FIRE, Material.POWDER_SNOW, Material.SWEET_BERRY_BUSH,
@@ -49,6 +54,7 @@ final class SpawnKitShelter {
     Map<Block, BlockState> originals = new LinkedHashMap<>();
     try {
       if (houseEnabled) {
+        buildFoundations(world, site, originals);
         for (int dx = -HOUSE_RADIUS; dx <= HOUSE_RADIUS; dx++) {
           for (int dz = -HOUSE_RADIUS; dz <= HOUSE_RADIUS; dz++) {
             set(world.getBlockAt(site.x() + dx, site.y(), site.z() + dz),
@@ -94,60 +100,99 @@ final class SpawnKitShelter {
 
     int centerX = origin.getBlockX();
     int centerZ = origin.getBlockZ();
-    int radius = houseEnabled ? HOUSE_RADIUS : 0;
     for (int[] offset : offsets) {
       int x = centerX + offset[0];
       int z = centerZ + offset[1];
-      if (!world.isChunkLoaded(x >> 4, z >> 4)) continue;
-      int floorY = world.getHighestBlockYAt(x, z, HeightMap.MOTION_BLOCKING_NO_LEAVES) + 1;
+      List<SurfaceColumn> columns = new ArrayList<>();
+      int lowestSurfaceY = Integer.MAX_VALUE;
+      int highestSurfaceY = Integer.MIN_VALUE;
+      boolean loaded = true;
+      int radius = houseEnabled ? HOUSE_RADIUS : 0;
+      for (int dx = -radius; dx <= radius && loaded; dx++) {
+        for (int dz = -radius; dz <= radius && loaded; dz++) {
+          loaded = addSurfaceColumn(world, x + dx, z + dz, columns);
+        }
+      }
+      if (houseEnabled && loaded) {
+        for (int[] torchOffset : outsideTorchOffsets()) {
+          if (!addSurfaceColumn(
+              world, x + torchOffset[0], z + torchOffset[1], columns)) {
+            loaded = false;
+            break;
+          }
+        }
+      }
+      if (!loaded) continue;
+      for (SurfaceColumn column : columns) {
+        lowestSurfaceY = Math.min(lowestSurfaceY, column.surfaceY());
+        highestSurfaceY = Math.max(highestSurfaceY, column.surfaceY());
+      }
+      if (!SpawnKitPolicy.canLevelShelterTerrain(lowestSurfaceY, highestSurfaceY)) continue;
+      int floorY = highestSurfaceY + 1;
       if (floorY <= world.getMinHeight() || floorY + 4 >= world.getMaxHeight()) continue;
       if (Math.abs((long) floorY - origin.getBlockY()) > SpawnKitPolicy.MAX_VERTICAL_SEARCH) continue;
       boolean valid = true;
-      for (int dx = -radius; dx <= radius && valid; dx++) {
-        for (int dz = -radius; dz <= radius && valid; dz++) {
-          valid = safeColumn(world, x + dx, z + dz, floorY, houseEnabled);
+      int clearThrough = floorY + (houseEnabled ? 4 : 1);
+      for (SurfaceColumn column : columns) {
+        if (!safeSurfaceColumn(world, column, floorY, clearThrough)) {
+          valid = false;
+          break;
         }
       }
       if (!valid) continue;
-      if (houseEnabled && !safeOutsideTorchColumns(world, x, z, floorY)) continue;
       return new Site(x, floorY, z);
     }
     return null;
   }
 
-  private boolean safeColumn(World world, int x, int z, int floorY, boolean houseEnabled) {
+  private boolean addSurfaceColumn(World world, int x, int z, List<SurfaceColumn> columns) {
     if (!world.isChunkLoaded(x >> 4, z >> 4)) return false;
+    int surfaceY = world.getHighestBlockYAt(x, z, HeightMap.MOTION_BLOCKING_NO_LEAVES);
+    columns.add(new SurfaceColumn(x, z, surfaceY));
+    return true;
+  }
+
+  private boolean safeSurfaceColumn(
+      World world, SurfaceColumn column, int floorY, int clearThrough) {
+    int x = column.x();
+    int z = column.z();
     if (!world.getWorldBorder().isInside(new Location(world, x + 0.5, floorY, z + 0.5))) return false;
-    Block floor = world.getBlockAt(x, floorY - 1, z);
+    if (floorY - 1 - column.surfaceY() > SpawnKitPolicy.MAX_SHELTER_TERRAIN_VARIATION) return false;
+    Block floor = world.getBlockAt(x, column.surfaceY(), z);
     Material floorType = floor.getType();
     if (floor.getState() instanceof TileState) return false;
     boolean leaves = floorType.name().equals("LEAVES") || floorType.name().endsWith("_LEAVES");
-    if (!SpawnKitPolicy.safeFloor(
-        floorType.isSolid(), floor.isLiquid(), leaves, UNSAFE_FLOORS.contains(floorType))) return false;
-    int clearHeight = houseEnabled ? 4 : 1;
-    for (int y = floorY; y <= floorY + clearHeight; y++) {
+    if (!NATURAL_FLOORS.contains(floorType)
+        || !SpawnKitPolicy.safeFloor(
+            floorType.isSolid(), floor.isLiquid(), leaves, UNSAFE_FLOORS.contains(floorType))) return false;
+    for (int y = column.surfaceY() + 1; y <= clearThrough; y++) {
       Block block = world.getBlockAt(x, y, z);
       if (!block.getType().isAir() || block.getState() instanceof org.bukkit.block.Container) return false;
     }
     return true;
   }
 
-  private boolean safeOutsideTorchColumns(World world, int x, int z, int floorY) {
-    for (int[] offset : List.of(
-        new int[] {-4, 0}, new int[] {4, 0}, new int[] {0, -4}, new int[] {0, 4})) {
-      int tx = x + offset[0];
-      int tz = z + offset[1];
-      if (!world.isChunkLoaded(tx >> 4, tz >> 4)) return false;
-      if (!world.getWorldBorder().isInside(new Location(world, tx + 0.5, floorY, tz + 0.5))) return false;
-      Block floor = world.getBlockAt(tx, floorY - 1, tz);
-      Material floorType = floor.getType();
-      boolean leaves = floorType.name().equals("LEAVES") || floorType.name().endsWith("_LEAVES");
-      if (floor.getState() instanceof TileState
-          || !SpawnKitPolicy.safeFloor(
-              floorType.isSolid(), floor.isLiquid(), leaves, UNSAFE_FLOORS.contains(floorType))) return false;
-      if (!world.getBlockAt(tx, floorY, tz).getType().isAir()) return false;
+  private void buildFoundations(World world, Site site, Map<Block, BlockState> originals) {
+    List<int[]> supports = new ArrayList<>();
+    for (int dx = -HOUSE_RADIUS; dx <= HOUSE_RADIUS; dx++) {
+      for (int dz = -HOUSE_RADIUS; dz <= HOUSE_RADIUS; dz++) {
+        supports.add(new int[] {dx, dz});
+      }
     }
-    return true;
+    supports.addAll(outsideTorchOffsets());
+    for (int[] offset : supports) {
+      int x = site.x() + offset[0];
+      int z = site.z() + offset[1];
+      int surfaceY = world.getHighestBlockYAt(x, z, HeightMap.MOTION_BLOCKING_NO_LEAVES);
+      for (int y = surfaceY + 1; y < site.y(); y++) {
+        set(world.getBlockAt(x, y, z), Material.COBBLESTONE, originals);
+      }
+    }
+  }
+
+  private List<int[]> outsideTorchOffsets() {
+    return List.of(
+        new int[] {-4, 0}, new int[] {4, 0}, new int[] {0, -4}, new int[] {0, 4});
   }
 
   private void buildWallsAndRoof(World world, Site site, Map<Block, BlockState> originals) {
@@ -212,8 +257,7 @@ final class SpawnKitShelter {
   }
 
   private void placeOutsideTorches(World world, Site site, Map<Block, BlockState> originals) {
-    for (int[] offset : List.of(
-        new int[] {-4, 0}, new int[] {4, 0}, new int[] {0, -4}, new int[] {0, 4})) {
+    for (int[] offset : outsideTorchOffsets()) {
       set(world.getBlockAt(site.x() + offset[0], site.y(), site.z() + offset[1]),
           Material.TORCH, originals);
     }
@@ -237,4 +281,6 @@ final class SpawnKitShelter {
   }
 
   record Site(int x, int y, int z) {}
+
+  private record SurfaceColumn(int x, int z, int surfaceY) {}
 }

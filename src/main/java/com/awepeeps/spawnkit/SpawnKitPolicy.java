@@ -7,6 +7,7 @@ import java.time.ZoneId;
 final class SpawnKitPolicy {
   static final int MAX_SEARCH_RADIUS = 64;
   static final int MAX_VERTICAL_SEARCH = 16;
+  static final int MAX_SHELTER_TERRAIN_VARIATION = 2;
 
   private SpawnKitPolicy() {}
 
@@ -40,6 +41,11 @@ final class SpawnKitPolicy {
     if (Math.abs((long) placementY - spawnBlockY) > MAX_VERTICAL_SEARCH
         || placementY <= minHeight || placementY + 1 >= maxHeight) return null;
     return placementY;
+  }
+
+  static boolean canLevelShelterTerrain(int lowestSurfaceY, int highestSurfaceY) {
+    return highestSurfaceY >= lowestSurfaceY
+        && highestSurfaceY - lowestSurfaceY <= MAX_SHELTER_TERRAIN_VARIATION;
   }
 
   static boolean safeFloor(boolean solid, boolean liquid, boolean leaves, boolean hazardous) {
