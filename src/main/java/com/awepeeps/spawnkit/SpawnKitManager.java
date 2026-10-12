@@ -6,6 +6,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -41,6 +42,7 @@ final class SpawnKitManager {
   private final Map<String, Long> retryAfterNanos = new HashMap<>();
   private final Map<String, Long> nextNoCandidateLogNanos = new HashMap<>();
   private final Map<String, Long> nextMarkerUpdateNanos = new HashMap<>();
+  private final Set<String> incompleteSetupReported = new HashSet<>();
   private boolean invalidConfigLogged;
 
   SpawnKitManager(JavaPlugin plugin, List<SpawnKitContents.Stack> stacks) {
@@ -86,12 +88,30 @@ final class SpawnKitManager {
     }
     if (!houseEnabled && !markerEnabled) return;
 
-    if (!store.getBoolean(worldPath + ".setup-complete", false)) {
+    boolean setupComplete = store.getBoolean(worldPath + ".setup-complete", false);
+    if (!setupComplete && store.getBoolean(worldPath + ".setup-in-progress", false)) {
+      String worldId = world.getUID().toString();
+      if (incompleteSetupReported.add(worldId)) {
+        plugin.getLogger().severe(
+            "Spawn Kit setup was interrupted for world " + world.getName()
+                + "; refusing to build another shelter until the world/setup record is reviewed.");
+      }
+      return;
+    }
+    if (!setupComplete) {
       long now = System.nanoTime();
       String worldId = world.getUID().toString();
       if (now < retryAfterNanos.getOrDefault(worldId, 0L)) return;
+      store.set(worldPath + ".setup-in-progress", true);
+      if (!saveStore("Could not reserve the spawn setup record; no shelter was built.")) {
+        store.set(worldPath + ".setup-in-progress", false);
+        retryAfterNanos.put(worldId, now + TimeUnit.SECONDS.toNanos(30));
+        return;
+      }
       Location spawn = shelter.build(world, houseEnabled, markerEnabled, chestEnabled, stacks);
       if (spawn == null) {
+        store.set(worldPath + ".setup-in-progress", false);
+        saveStore("Could not clear the spawn setup reservation after a safe site was not found.");
         retryAfterNanos.put(worldId, now + TimeUnit.SECONDS.toNanos(30));
         if (now >= nextNoCandidateLogNanos.getOrDefault(worldId, 0L)) {
           plugin.getLogger().info("Spawn Kit setup deferred: no safe, flat, loaded site was found near world spawn.");
@@ -100,6 +120,7 @@ final class SpawnKitManager {
         return;
       }
       store.set(worldPath + ".setup-complete", true);
+      store.set(worldPath + ".setup-in-progress", false);
       store.set(worldPath + ".house-built", houseEnabled);
       store.set(worldPath + ".chest-placed", chestEnabled);
       store.set(worldPath + ".spawn-x", spawn.getBlockX());
@@ -111,6 +132,7 @@ final class SpawnKitManager {
       }
       retryAfterNanos.remove(worldId);
       nextNoCandidateLogNanos.remove(worldId);
+      incompleteSetupReported.remove(worldId);
     }
 
     if (markerEnabled) {
