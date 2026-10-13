@@ -43,6 +43,23 @@ spawn-kit:
     name: "World Spawn"
   house:
     enabled: false
+    # The furnishings and exterior decorations of the house. Every toggle defaults to true; turn one
+    # off to omit exactly that piece. `extras` takes single-block utilities from a fixed allow-list
+    # (SMITHING_TABLE, GRINDSTONE, STONECUTTER, CARTOGRAPHY_TABLE, LOOM, BARREL, ENDER_CHEST,
+    # FLETCHING_TABLE, COMPOSTER, LECTERN, JUKEBOX, BREWING_STAND, RESPAWN_ANCHOR): unknown or
+    # disallowed names are skipped with one warning, and if there are more than fit they are placed
+    # until the ring is full. Banner colours are dye colours.
+    furnishings:
+      anvil: true
+      furnace: true
+      lodestone: true
+      crafting-table: true
+      exterior-banners: true
+      exterior-torches: true
+      banners:
+        left: WHITE
+        right: RED
+      extras: []
     # The chest is filled when the house is first built and again only via
     # '/spawnkit build confirm supplies'. Re-issuing the layout never replaces an existing chest,
     # so whatever players stored in it survives a rebuild.

@@ -207,17 +207,65 @@ class SpawnZonePolicyTest {
   @Test
   void setupStateSeparatesFreshWorldsFromLegacyOnesAndInProgressBuilds() {
     assertEquals(SpawnZonePolicy.SetupState.CURRENT,
-        SpawnZonePolicy.classifySetup(true, true, false, true));
+        SpawnZonePolicy.classifySetup(true, false, true, false, true));
+    assertEquals(SpawnZonePolicy.SetupState.CURRENT,
+        SpawnZonePolicy.classifySetup(true, true, true, false, true));
+    assertEquals(SpawnZonePolicy.SetupState.UPGRADE_AVAILABLE,
+        SpawnZonePolicy.classifySetup(false, true, true, false, true));
     assertEquals(SpawnZonePolicy.SetupState.IN_PROGRESS,
-        SpawnZonePolicy.classifySetup(false, true, true, false));
+        SpawnZonePolicy.classifySetup(false, false, true, true, false));
     assertEquals(SpawnZonePolicy.SetupState.LEGACY_UNMIGRATED,
-        SpawnZonePolicy.classifySetup(false, true, false, false));
-    assertEquals(SpawnZonePolicy.SetupState.LEGACY_UNMIGRATED,
-        SpawnZonePolicy.classifySetup(false, true, false, false));
+        SpawnZonePolicy.classifySetup(false, false, true, false, false));
     assertEquals(SpawnZonePolicy.SetupState.FRESH,
-        SpawnZonePolicy.classifySetup(false, false, false, false));
-    // A world that recorded a current layout but whose zone is missing is rebuilt as in progress.
+        SpawnZonePolicy.classifySetup(false, false, false, false, false));
+    // A world that recorded a current layout but whose zone is missing is rebuilt as fresh, and a
+    // previous-layout world whose zone is missing is treated as fresh rather than offered as an
+    // upgrade.
     assertEquals(SpawnZonePolicy.SetupState.FRESH,
-        SpawnZonePolicy.classifySetup(true, true, false, false));
+        SpawnZonePolicy.classifySetup(true, false, true, false, false));
+    assertEquals(SpawnZonePolicy.SetupState.FRESH,
+        SpawnZonePolicy.classifySetup(false, true, true, false, false));
+    // A version-2 world is never upgraded automatically while a build is reserved.
+    assertEquals(SpawnZonePolicy.SetupState.IN_PROGRESS,
+        SpawnZonePolicy.classifySetup(false, true, true, true, true));
+  }
+
+  @Test
+  void additiveUpgradeNeverOverwritesAndNeverReplenishesAChest() {
+    // A version-2 world is offered as an upgrade, never as an auto-rebuild.
+    assertEquals(SpawnZonePolicy.SetupState.UPGRADE_AVAILABLE,
+        SpawnZonePolicy.classifySetup(false, true, true, false, true));
+    // Occupied target cells and missing supports are never overwritten.
+    assertFalse(SpawnZonePolicy.upgradeAllowed(SpawnZoneLayout.Role.ANVIL, false, true, false));
+    assertFalse(SpawnZonePolicy.upgradeAllowed(SpawnZoneLayout.Role.ANVIL, true, false, false));
+    assertTrue(SpawnZonePolicy.upgradeAllowed(SpawnZoneLayout.Role.ANVIL, true, true, false));
+    // The chest is skipped whenever one already exists, even in an otherwise free cell.
+    assertFalse(SpawnZonePolicy.upgradeAllowed(SpawnZoneLayout.Role.CHEST, true, true, true));
+    assertTrue(SpawnZonePolicy.upgradeAllowed(SpawnZoneLayout.Role.CHEST, true, true, false));
+    // A second run is a no-op because the cells it filled are no longer replaceable.
+    assertFalse(SpawnZonePolicy.upgradeAllowed(SpawnZoneLayout.Role.LODESTONE, false, true, true));
+  }
+
+  @Test
+  void entryStepsDescendFromTheDoorstepToTheGroundWithinABoundedMaximum() {    // Ground lower: one tread per block of drop, outwards from the doorstep.
+    SpawnZonePolicy.EntrySteps twoDown = SpawnZonePolicy.entrySteps(64, 62, 3);
+    assertFalse(twoDown.groundHigher());
+    assertEquals(List.of(63), twoDown.treads());
+    SpawnZonePolicy.EntrySteps fourDown = SpawnZonePolicy.entrySteps(64, 60, 3);
+    assertEquals(List.of(63, 62, 61), fourDown.treads());
+    // More drop than the maximum is truncated to the maximum, leaving the final step to the ground.
+    SpawnZonePolicy.EntrySteps capped = SpawnZonePolicy.entrySteps(64, 55, 3);
+    assertEquals(3, capped.count());
+    assertTrue(capped.truncated());
+    // Level ground needs no tread.
+    SpawnZonePolicy.EntrySteps level = SpawnZonePolicy.entrySteps(64, 64, 3);
+    assertTrue(level.treads().isEmpty());
+    assertFalse(level.truncated());
+    // Higher ground asks for a cleared approach instead of steps.
+    SpawnZonePolicy.EntrySteps higher = SpawnZonePolicy.entrySteps(64, 66, 3);
+    assertTrue(higher.groundHigher());
+    assertTrue(higher.treads().isEmpty());
+    // A single block of drop is the ground itself.
+    assertTrue(SpawnZonePolicy.entrySteps(64, 63, 3).treads().isEmpty());
   }
 }

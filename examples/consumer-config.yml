@@ -18,6 +18,19 @@ spawn-kit:
     name: "World Spawn"
   house:
     enabled: true
+    furnishings:
+      anvil: true
+      furnace: true
+      lodestone: true
+      crafting-table: true
+      exterior-banners: true
+      exterior-torches: true
+      banners:
+        left: WHITE
+        right: RED
+      extras:
+        - BARREL
+        - ENDER_CHEST
     chest:
       enabled: true
       items:
