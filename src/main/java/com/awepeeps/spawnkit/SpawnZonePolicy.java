@@ -4,16 +4,31 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import org.bukkit.Material;
+import org.bukkit.Tag;
 
 /**
  * Pure decision logic for the spawn zone: terrain classification, floor-level selection, the
  * protection decision for each covered event, spawn-location handling and setup/migration state.
  * No world access, so every rule here is unit testable.
+ *
+ * <p>Terrain classification prefers the vanilla block tags (via {@link TerrainTags}) and falls back
+ * to material names and explicit sets for everything the tags do not cover, so it keeps working for
+ * blocks added by a future Minecraft version. The tag memberships themselves come from the running
+ * server's registry; without a server (plain unit tests) the tag questions answer {@code false} and
+ * the explicit rules carry the classification.
  */
 final class SpawnZonePolicy {
   static final int MAX_TERRAIN_VARIATION = 4;
   /** The value the {@code respawn_radius} game rule is pinned to while spawn control is managed. */
   static final int MANAGED_RESPAWN_RADIUS = 0;
+
+  /** Bounds for removing a tree whose trunk stands inside the footprint (floating-canopy guard). */
+  static final int TREE_CLEAR_RADIUS = 4;
+  static final int TREE_CLEAR_ABOVE_ROOF = 12;
+  static final int TREE_CLEAR_MAX_BLOCKS = 512;
+
+  /** How many distinct offending block types a deferral message names. */
+  static final int MAX_REPORTED_OFFENDER_TYPES = 4;
 
   /** Every event the plugin covers. {@code playerExempt} events may be performed by a creative op. */
   enum GuardEvent {
@@ -64,6 +79,80 @@ final class SpawnZonePolicy {
     OCCUPIED
   }
 
+  /** The cause of a refused site, in the order the checks are applied. */
+  enum Defect {
+    OUTSIDE_BORDER,
+    VOID,
+    LAVA,
+    OCCUPIED,
+    UNEVEN,
+    OUT_OF_HEIGHT
+  }
+
+  /**
+   * A vanilla block tag the classifier may consult. Kept behind {@link TerrainTags} because the
+   * real tag contents need the running server's registry.
+   */
+  enum TerrainTag {
+    LEAVES,
+    LOGS,
+    SAPLINGS,
+    FLOWERS,
+    DIRT,
+    BASE_STONE,
+    SAND,
+    SNOW,
+    ICE,
+    MOSS,
+    REPLACEABLE_BY_TREES,
+    CAVE_VINES
+  }
+
+  /** Answers block-tag membership questions. */
+  interface TerrainTags {
+    boolean isTagged(TerrainTag tag, Material material);
+
+    /** No tag is known: every explicit rule still applies. Used without a server. */
+    TerrainTags NONE = (tag, material) -> false;
+
+    /** The tags of the running server. */
+    static TerrainTags server() {
+      return new ServerTerrainTags();
+    }
+  }
+
+  private static final class ServerTerrainTags implements TerrainTags {
+    @Override
+    public boolean isTagged(TerrainTag tag, Material material) {
+      try {
+        return tagOf(tag).isTagged(material);
+      } catch (LinkageError | RuntimeException error) {
+        // Reached when there is no server registry to read (plain unit tests). The explicit rules
+        // still classify every material, so the classifier stays correct without tags.
+        return false;
+      }
+    }
+
+    private static Tag<Material> tagOf(TerrainTag tag) {
+      return switch (tag) {
+        case LEAVES -> Tag.LEAVES;
+        case LOGS -> Tag.LOGS;
+        case SAPLINGS -> Tag.SAPLINGS;
+        case FLOWERS -> Tag.FLOWERS;
+        case DIRT -> Tag.DIRT;
+        case BASE_STONE -> Tag.BASE_STONE_OVERWORLD;
+        case SAND -> Tag.SAND;
+        case SNOW -> Tag.SNOW;
+        case ICE -> Tag.ICE;
+        case MOSS -> Tag.MOSS_BLOCKS;
+        case REPLACEABLE_BY_TREES -> Tag.REPLACEABLE_BY_TREES;
+        case CAVE_VINES -> Tag.CAVE_VINES;
+      };
+    }
+  }
+
+  private static final TerrainTags SERVER_TAGS = TerrainTags.server();
+
   /** Setup lifecycle derived from the durable per-world record. */
   enum SetupState {
     FRESH,
@@ -87,40 +176,58 @@ final class SpawnZonePolicy {
 
   private static final Set<Material> NATURAL_GROUND = Set.of(
       Material.GRASS_BLOCK, Material.DIRT, Material.COARSE_DIRT, Material.ROOTED_DIRT,
-      Material.PODZOL, Material.MYCELIUM, Material.MUD, Material.CLAY, Material.SAND,
-      Material.RED_SAND, Material.GRAVEL, Material.SNOW_BLOCK, Material.STONE,
-      Material.ANDESITE, Material.DIORITE, Material.GRANITE, Material.TUFF, Material.DEEPSLATE,
-      Material.CALCITE, Material.DRIPSTONE_BLOCK, Material.BEDROCK, Material.SANDSTONE,
-      Material.RED_SANDSTONE, Material.MOSS_BLOCK, Material.ICE, Material.PACKED_ICE,
-      Material.BLUE_ICE, Material.MAGMA_BLOCK, Material.OBSIDIAN, Material.BASALT,
-      Material.SMOOTH_BASALT, Material.BLACKSTONE, Material.TERRACOTTA, Material.WATER,
-      Material.LAVA, Material.POINTED_DRIPSTONE, Material.AMETHYST_BLOCK);
+      Material.PODZOL, Material.MYCELIUM, Material.MUD, Material.MUDDY_MANGROVE_ROOTS,
+      Material.CLAY, Material.SAND, Material.RED_SAND, Material.SUSPICIOUS_SAND,
+      Material.GRAVEL, Material.SNOW_BLOCK, Material.STONE, Material.ANDESITE, Material.DIORITE,
+      Material.GRANITE, Material.TUFF, Material.DEEPSLATE, Material.CALCITE,
+      Material.DRIPSTONE_BLOCK, Material.BEDROCK, Material.SANDSTONE, Material.RED_SANDSTONE,
+      Material.MOSS_BLOCK, Material.ICE, Material.PACKED_ICE, Material.BLUE_ICE,
+      Material.MAGMA_BLOCK, Material.OBSIDIAN, Material.BASALT, Material.SMOOTH_BASALT,
+      Material.BLACKSTONE, Material.TERRACOTTA, Material.WATER, Material.LAVA,
+      Material.POINTED_DRIPSTONE, Material.AMETHYST_BLOCK, Material.FROSTED_ICE);
 
   /**
-   * Blocks the builder may clear without asking the operator. Deliberately excludes anything a
-   * player plants on farmland (wheat, carrots, potatoes, beetroots and the pumpkin/melon stems):
-   * those are never generated by the world, so clearing them would silently destroy a farm.
-   * Excluding them also makes them {@link BlockKind#OCCUPIED}, which refuses the site instead.
+   * Blocks the builder may clear without asking the operator. Covers everything world generation
+   * places on or near the surface: ground cover, flowers, crops of the wild, vines and whole trees.
+   * Deliberately excludes anything a player plants on farmland (wheat, carrots, potatoes, beetroots
+   * and the pumpkin/melon stems) and every crafted block: those are never generated by the world,
+   * so clearing them would silently destroy a player's work. Excluding them also makes them
+   * {@link BlockKind#OCCUPIED}, which refuses the site instead.
    */
   private static final Set<Material> CLEARABLE = Set.of(
-      Material.SNOW, Material.SHORT_GRASS, Material.TALL_GRASS, Material.FERN,
-      Material.LARGE_FERN, Material.DEAD_BUSH, Material.DANDELION, Material.POPPY,
-      Material.BLUE_ORCHID, Material.ALLIUM, Material.AZURE_BLUET, Material.RED_TULIP,
-      Material.ORANGE_TULIP, Material.WHITE_TULIP, Material.PINK_TULIP,
-      Material.OXEYE_DAISY, Material.CORNFLOWER, Material.LILY_OF_THE_VALLEY,
-      Material.TORCHFLOWER, Material.PITCHER_PLANT, Material.SUGAR_CANE, Material.BAMBOO,
-      Material.CACTUS, Material.MELON, Material.PUMPKIN, Material.VINE, Material.LILY_PAD,
-      Material.MOSS_CARPET, Material.SWEET_BERRY_BUSH, Material.BROWN_MUSHROOM,
-      Material.RED_MUSHROOM);
+      Material.SNOW, Material.POWDER_SNOW, Material.SHORT_GRASS, Material.TALL_GRASS,
+      Material.FERN, Material.LARGE_FERN, Material.SHORT_DRY_GRASS, Material.TALL_DRY_GRASS,
+      Material.DEAD_BUSH, Material.DANDELION, Material.POPPY, Material.BLUE_ORCHID,
+      Material.ALLIUM, Material.AZURE_BLUET, Material.RED_TULIP, Material.ORANGE_TULIP,
+      Material.WHITE_TULIP, Material.PINK_TULIP, Material.OXEYE_DAISY, Material.CORNFLOWER,
+      Material.LILY_OF_THE_VALLEY, Material.TORCHFLOWER, Material.PITCHER_PLANT,
+      Material.LILAC, Material.SUNFLOWER, Material.ROSE_BUSH, Material.PEONY,
+      Material.PINK_PETALS, Material.WILDFLOWERS, Material.FIREFLY_BUSH,
+      Material.OPEN_EYEBLOSSOM, Material.CLOSED_EYEBLOSSOM, Material.SUGAR_CANE, Material.BAMBOO,
+      Material.CACTUS, Material.CACTUS_FLOWER, Material.MELON, Material.PUMPKIN, Material.VINE,
+      Material.LILY_PAD, Material.MOSS_CARPET, Material.PALE_MOSS_CARPET,
+      Material.PALE_HANGING_MOSS, Material.RESIN_CLUMP, Material.SWEET_BERRY_BUSH,
+      Material.BROWN_MUSHROOM, Material.RED_MUSHROOM, Material.LEAF_LITTER, Material.BUSH,
+      Material.AZALEA, Material.FLOWERING_AZALEA, Material.BIG_DRIPLEAF, Material.SMALL_DRIPLEAF,
+      Material.SPORE_BLOSSOM, Material.HANGING_ROOTS, Material.GLOW_LICHEN, Material.CAVE_VINES,
+      Material.CAVE_VINES_PLANT, Material.WEEPING_VINES, Material.WEEPING_VINES_PLANT,
+      Material.TWISTING_VINES, Material.TWISTING_VINES_PLANT, Material.CRIMSON_ROOTS,
+      Material.WARPED_ROOTS, Material.NETHER_SPROUTS, Material.KELP, Material.KELP_PLANT,
+      Material.SEAGRASS, Material.TALL_SEAGRASS, Material.COCOA, Material.BEE_NEST,
+      Material.MANGROVE_ROOTS);
 
   private SpawnZonePolicy() {}
 
   static BlockKind classify(Material material) {
+    return classify(material, SERVER_TAGS);
+  }
+
+  static BlockKind classify(Material material, TerrainTags tags) {
     if (isAir(material)) return BlockKind.AIR;
     if (material == Material.LAVA) return BlockKind.LAVA;
     if (material == Material.WATER || material == Material.BUBBLE_COLUMN) return BlockKind.WATER;
-    if (isClearableVegetation(material)) return BlockKind.VEGETATION;
-    if (isNaturalGround(material)) return BlockKind.NATURAL;
+    if (isClearableVegetation(material, tags)) return BlockKind.VEGETATION;
+    if (isNaturalGround(material, tags)) return BlockKind.NATURAL;
     return BlockKind.OCCUPIED;
   }
 
@@ -131,24 +238,79 @@ final class SpawnZonePolicy {
   }
 
   static boolean isNaturalGround(Material material) {
+    return isNaturalGround(material, SERVER_TAGS);
+  }
+
+  static boolean isNaturalGround(Material material, TerrainTags tags) {
     if (NATURAL_GROUND.contains(material)) return true;
+    if (tags.isTagged(TerrainTag.DIRT, material)
+        || tags.isTagged(TerrainTag.BASE_STONE, material)
+        || tags.isTagged(TerrainTag.SAND, material)
+        || tags.isTagged(TerrainTag.SNOW, material)
+        || tags.isTagged(TerrainTag.ICE, material)
+        || tags.isTagged(TerrainTag.MOSS, material)) {
+      return true;
+    }
     String name = material.name();
     return name.endsWith("_TERRACOTTA")
-        || name.endsWith("DEEPSLATE")
-        || name.endsWith("_ORE");
+        || name.endsWith("_ORE")
+        || name.endsWith("SANDSTONE");
   }
 
   static boolean isClearableVegetation(Material material) {
+    return isClearableVegetation(material, SERVER_TAGS);
+  }
+
+  static boolean isClearableVegetation(Material material, TerrainTags tags) {
     if (CLEARABLE.contains(material)) return true;
+    if (tags.isTagged(TerrainTag.LEAVES, material)
+        || tags.isTagged(TerrainTag.LOGS, material)
+        || tags.isTagged(TerrainTag.SAPLINGS, material)
+        || tags.isTagged(TerrainTag.FLOWERS, material)
+        || tags.isTagged(TerrainTag.CAVE_VINES, material)
+        || tags.isTagged(TerrainTag.REPLACEABLE_BY_TREES, material)) {
+      return true;
+    }
     String name = material.name();
+    // A stripped log/wood is a processed block a player made: refuse it even though its name ends
+    // with _LOG/_WOOD.
+    if (name.startsWith("STRIPPED_")) return false;
     return name.endsWith("_LOG")
         || name.endsWith("_WOOD")
         || name.endsWith("_LEAVES")
         || name.endsWith("_SAPLING")
         || name.endsWith("_FLOWER")
-        || name.endsWith("_TULIP")
-        || name.equals("MANGROVE_ROOTS")
-        || name.equals("MUDDY_MANGROVE_ROOTS");
+        || name.endsWith("_TULIP");
+  }
+
+  /** A tree trunk block (log or bark), used to seed connected-tree clearing. */
+  static boolean isTreeTrunk(Material material) {
+    return isTreeTrunk(material, SERVER_TAGS);
+  }
+
+  static boolean isTreeTrunk(Material material, TerrainTags tags) {
+    if (tags.isTagged(TerrainTag.LOGS, material)) return true;
+    String name = material.name();
+    if (name.startsWith("STRIPPED_")) return false;
+    return name.endsWith("_LOG") || name.endsWith("_WOOD");
+  }
+
+  /**
+   * A block that belongs to a generated tree and should go with it: the trunk, its leaves and the
+   * attachments world generation puts on trees (vines, cocoa, a generated bee nest).
+   */
+  static boolean isTreePart(Material material) {
+    return isTreePart(material, SERVER_TAGS);
+  }
+
+  static boolean isTreePart(Material material, TerrainTags tags) {
+    if (isTreeTrunk(material, tags)) return true;
+    if (tags.isTagged(TerrainTag.LEAVES, material)) return true;
+    String name = material.name();
+    return name.endsWith("_LEAVES")
+        || material == Material.VINE
+        || material == Material.COCOA
+        || material == Material.BEE_NEST;
   }
 
   /** True when the block may be replaced or cleared during construction; false means preserve. */
@@ -174,6 +336,30 @@ final class SpawnZonePolicy {
     return floorY;
   }
 
+  /** The first blocking defect for a candidate site, or null when it can be built. */
+  static Defect firstDefect(boolean voidBeneath, boolean lavaBeneath, boolean occupied,
+                            boolean unevenTerrain, boolean outOfHeightRange,
+                            boolean outsideWorldBorder) {
+    if (outsideWorldBorder) return Defect.OUTSIDE_BORDER;
+    if (voidBeneath) return Defect.VOID;
+    if (lavaBeneath) return Defect.LAVA;
+    if (occupied) return Defect.OCCUPIED;
+    if (unevenTerrain) return Defect.UNEVEN;
+    if (outOfHeightRange) return Defect.OUT_OF_HEIGHT;
+    return null;
+  }
+
+  static String message(Defect defect) {
+    return switch (defect) {
+      case OUTSIDE_BORDER -> "footprint outside the world border";
+      case VOID -> "void beneath the footprint";
+      case LAVA -> "lava beneath the footprint";
+      case OCCUPIED -> "footprint intersects non-natural blocks, containers or a structure";
+      case UNEVEN -> "terrain is too uneven to level";
+      case OUT_OF_HEIGHT -> "no headroom or too close to the world floor";
+    };
+  }
+
   /**
    * Returns the first blocking defect for a candidate site, or null when it can be built. Order is
    * deliberate: catastrophic cases first, then occupancy, then shape.
@@ -181,13 +367,9 @@ final class SpawnZonePolicy {
   static String placementDefect(boolean voidBeneath, boolean lavaBeneath, boolean occupied,
                                 boolean unevenTerrain, boolean outOfHeightRange,
                                 boolean outsideWorldBorder) {
-    if (outsideWorldBorder) return "footprint outside the world border";
-    if (voidBeneath) return "void beneath the footprint";
-    if (lavaBeneath) return "lava beneath the footprint";
-    if (occupied) return "footprint intersects non-natural blocks, containers or a structure";
-    if (unevenTerrain) return "terrain is too uneven to level";
-    if (outOfHeightRange) return "no headroom or too close to the world floor";
-    return null;
+    Defect defect = firstDefect(voidBeneath, lavaBeneath, occupied, unevenTerrain,
+        outOfHeightRange, outsideWorldBorder);
+    return defect == null ? null : message(defect);
   }
 
   /** Whether a covered event must be denied for a block inside the protected region. */

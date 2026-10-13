@@ -35,5 +35,28 @@ final class SpawnKitPolicy {
     return (int) Math.min(30 * 60L, 30L << Math.min(Math.max(0, failedAttempts), 6));
   }
 
+  /**
+   * Whether a site refusal is caused by terrain that will not change by waiting (world-generated
+   * blocks, shape, border, height) rather than a transient condition (chunks or terrain not loaded
+   * yet). A deterministic refusal is logged in full once and the timer retry is stopped.
+   */
+  static boolean isDeterministicDefect(String defect) {
+    return defect != null && !defect.equals("spawn chunks were not loaded");
+  }
+
+  /**
+   * The key a deferral summary is deduplicated by: a count written as {@code =<digits>} is ignored,
+   * so a reason that only changes its counts is logged once.
+   */
+  static String deferralKey(String summary) {
+    return summary.replaceAll("=\\d+", "");
+  }
+
+  /** The message shown when an operator builds a world that is already at the current layout. */
+  static String alreadyCurrent(int layoutVersion) {
+    return "This world is already at the current spawn layout (version " + layoutVersion
+        + "); nothing was changed.";
+  }
+
   record ChunkBounds(int minX, int maxX, int minZ, int maxZ) {}
 }
