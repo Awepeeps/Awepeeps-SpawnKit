@@ -492,6 +492,48 @@ final class SpawnZonePolicy {
   }
 
   /**
+   * The clear refusal to show when an operator asks to {@code force} the build on a world that is
+   * only ever upgraded additively, or null when the flags are allowed. An additive upgrade only
+   * fills replaceable cells and never overwrites an existing house or chest, so the destructive
+   * flags have no meaning there and must be rejected rather than silently ignored.
+   */
+  static String additiveUpgradeForceRefusal(SetupState state, boolean force, boolean forceItems) {
+    if (!force && !forceItems) return null;
+    if (state != SetupState.UPGRADE_AVAILABLE && state != SetupState.CURRENT) return null;
+    return "This world is upgraded additively: every existing block and chest keeps its contents,"
+        + " so 'force' and 'items' are not accepted here. Run '/spawnkit build confirm' without"
+        + " them.";
+  }
+
+  /** What an explicit build request should do for a world already at the current layout version. */
+  enum CurrentBuild {
+    /** Not a current-layout world (or no house kit): report that nothing needs doing. */
+    ALREADY_CURRENT,
+    /**
+     * The protected zone is built but the house pass has not recorded completion: the automatic
+     * house build still owns the world, so the additive pass must not run.
+     */
+    AWAIT_HOUSE,
+    /** The house is recorded built: retry any additive piece that was skipped earlier. */
+    ADDITIVE_UPGRADE
+  }
+
+  /**
+   * Decides what an operator build request does for a world whose setup state is {@code CURRENT}.
+   * The additive upgrade is only safe once the house pass has recorded completion: before that the
+   * automatic house build still owns the world, and an additive pass run in the window after the
+   * zone completes (and before the next house cycle, or after a deferred house pass) would place
+   * furnishings on the bare zone, mark the world complete, and leave the house shell unbuilt. The
+   * explicit command un-defers the house pass, so leaving the work to it preserves operator
+   * recovery without letting the two writers overlap.
+   */
+  static CurrentBuild currentBuild(boolean houseConfigured, boolean zoneRecorded,
+                                   boolean houseRecorded) {
+    if (!houseConfigured || !zoneRecorded) return CurrentBuild.ALREADY_CURRENT;
+    return houseRecorded ? CurrentBuild.ADDITIVE_UPGRADE : CurrentBuild.AWAIT_HOUSE;
+  }
+
+  /**
    * Plans the entry steps below the doorstep.
    *
    * <p>{@code doorstepTopY} and {@code groundTopY} are the Y of the top surface of the doorstep

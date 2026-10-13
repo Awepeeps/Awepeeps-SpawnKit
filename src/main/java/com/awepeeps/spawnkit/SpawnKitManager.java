@@ -555,6 +555,12 @@ final class SpawnKitManager {
     previousLayoutLogged.remove(worldId);
 
     SpawnZonePolicy.SetupState state = classify(worldPath);
+    // An additive upgrade never overwrites an existing house or chest, so 'force'/'items' have no
+    // meaning there: reject them clearly before any reservation, world change or supply is made.
+    String forceRefusal = SpawnZonePolicy.additiveUpgradeForceRefusal(state, force, forceItems);
+    if (forceRefusal != null) {
+      return forceRefusal;
+    }
     if (state == SpawnZonePolicy.SetupState.CURRENT) {
       return buildCurrent(world, worldPath, withSupplies);
     }
@@ -577,11 +583,24 @@ final class SpawnKitManager {
   /**
    * A world already at the current layout version: report it clearly and, as designed, retry any
    * additive piece that was skipped earlier. Nothing structural is ever replaced, so on a complete
-   * house this adds nothing.
+   * house this adds nothing. While the house pass has not recorded completion the additive pass is
+   * not run at all: the automatic house build owns the world, and running here would place
+   * furnishings on the bare zone and mark it complete before the shell exists.
    */
   private String buildCurrent(World world, String worldPath, boolean withSupplies) {
-    if (!houseConfigured() || !store.contains(worldPath + ".spawn-x")) {
+    SpawnZonePolicy.CurrentBuild action = SpawnZonePolicy.currentBuild(
+        houseConfigured(), store.contains(worldPath + ".spawn-x"),
+        store.getBoolean(worldPath + ".setup-complete", false));
+    if (action == SpawnZonePolicy.CurrentBuild.ALREADY_CURRENT) {
       return SpawnKitPolicy.alreadyCurrent(LAYOUT_VERSION);
+    }
+    if (action == SpawnZonePolicy.CurrentBuild.AWAIT_HOUSE) {
+      // The house pass has not recorded completion, so the automatic build still owns this world.
+      // Running the additive pass now would place furnishings on the bare zone and then mark the
+      // world complete, leaving the wall/floor/roof shell unbuilt. The command has already cleared
+      // any deferral, so the house pass resumes on its next cycle and keeps the durable reservation.
+      return "This world has its protected spawn zone but not its house yet; the automatic house"
+          + " build will run on the next cycle. Nothing was changed.";
     }
     int sx = store.getInt(worldPath + ".spawn-x");
     int sy = store.getInt(worldPath + ".spawn-y");

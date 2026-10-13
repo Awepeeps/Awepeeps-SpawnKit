@@ -268,4 +268,44 @@ class SpawnZonePolicyTest {
     // A single block of drop is the ground itself.
     assertTrue(SpawnZonePolicy.entrySteps(64, 63, 3).treads().isEmpty());
   }
+
+  @Test
+  void forcingAnAdditiveUpgradeIsRejectedWithAClearMessage() {
+    // The destructive flags only mean something for a fresh site: the additive states refuse both.
+    for (SpawnZonePolicy.SetupState state : List.of(
+        SpawnZonePolicy.SetupState.UPGRADE_AVAILABLE, SpawnZonePolicy.SetupState.CURRENT)) {
+      for (boolean items : List.of(false, true)) {
+        String message = SpawnZonePolicy.additiveUpgradeForceRefusal(state, true, items);
+        assertNotNull(message, state + " must refuse force");
+        assertTrue(message.contains("'force'"), message);
+        assertTrue(message.contains("'items'"), message);
+        assertTrue(message.toLowerCase().contains("without"), message);
+      }
+      assertNull(SpawnZonePolicy.additiveUpgradeForceRefusal(state, false, false),
+          "no flags is always allowed");
+    }
+    // A fresh, in-progress or legacy world may still be forced.
+    for (SpawnZonePolicy.SetupState state : List.of(
+        SpawnZonePolicy.SetupState.FRESH, SpawnZonePolicy.SetupState.IN_PROGRESS,
+        SpawnZonePolicy.SetupState.LEGACY_UNMIGRATED)) {
+      assertNull(SpawnZonePolicy.additiveUpgradeForceRefusal(state, true, true), state.toString());
+      assertNull(SpawnZonePolicy.additiveUpgradeForceRefusal(state, false, false));
+    }
+  }
+
+  @Test
+  void anOperatorBuildDoesNotRaceTheAutomaticHousePass() {
+    // Not a current-layout world, or the house kit is off: nothing to add.
+    assertEquals(SpawnZonePolicy.CurrentBuild.ALREADY_CURRENT,
+        SpawnZonePolicy.currentBuild(false, true, true));
+    assertEquals(SpawnZonePolicy.CurrentBuild.ALREADY_CURRENT,
+        SpawnZonePolicy.currentBuild(true, false, true));
+    // Zone built but the house pass has not recorded completion: it still owns the world.
+    assertEquals(SpawnZonePolicy.CurrentBuild.AWAIT_HOUSE,
+        SpawnZonePolicy.currentBuild(true, true, false),
+        "the additive pass must not run while the automatic house build owns the world");
+    // House recorded built: retry additive pieces.
+    assertEquals(SpawnZonePolicy.CurrentBuild.ADDITIVE_UPGRADE,
+        SpawnZonePolicy.currentBuild(true, true, true));
+  }
 }

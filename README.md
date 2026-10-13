@@ -366,6 +366,13 @@ that carries contents. `/spawnkit build confirm force items` is the explicit sec
 replaces those, with the obvious risk that their contents are lost. `supplies` combines with either.
 The plain `/spawnkit build confirm` never replaces non-natural blocks.
 
+`force` overrides **only** the occupancy check. A site that is also too uneven, lacks headroom, is
+over lava, is void, or crosses the world border is still refused with that deterministic reason, so a
+forced build always has a valid floor to build on. `force`/`items` describe replacing existing
+blocks on a fresh site; they are rejected with a clear message on an additive upgrade (a version-2
+world, or one already at the current layout version), which never overwrites an existing house or
+chest.
+
 > Trees are cleared (trunks, leaves and their attachments) because a spawn inside a forest is common,
 > and the owner accepts that the trees at spawn are removed. A structure built purely out of
 > unprocessed logs is indistinguishable from a tree and would be cleared; anything else man-made
@@ -395,7 +402,10 @@ The plain `/spawnkit build confirm` never replaces non-natural blocks.
   `supplies` keeps its meaning: it adds another set of configured items to an existing chest.
 - A world already at the **current layout version** is reported as already current by
   `/spawnkit build confirm`; nothing structural is changed. The command still retries any additive
-  piece that was skipped earlier and reports what it added and skipped.
+  piece that was skipped earlier and reports what it added and skipped. While the house pass has not
+  recorded completion (the zone is built but the house has not run yet, or it was deferred), the
+  command leaves the world to the automatic house build instead of running the additive pass over
+  the bare zone; it reports that nothing was changed and the house pass resumes on its next cycle.
 - A world that is mid-build (an interrupted reservation) refuses to build again until the record is
   reviewed, exactly as before. A build that this instance is *still running* is never reported as an
   interruption.
@@ -496,7 +506,7 @@ Requires JDK 25. Run:
 bash ./gradlew --no-daemon clean build
 ```
 
-The reproducible jar is written to `build/libs/awepeeps-spawn-kit-1.3.1.jar`.
+The reproducible jar is written to `build/libs/awepeeps-spawn-kit-1.3.2.jar`.
 
 ## Behaviour changes in 1.3.0
 
@@ -544,3 +554,19 @@ The reproducible jar is written to `build/libs/awepeeps-spawn-kit-1.3.1.jar`.
   was changed instead of refusing the site for the house the plugin built.
 - The protected zone, the pre-build issuance record, ticket release on every path, bounded batches,
   the never-repair-the-house rule and the additive upgrade are unchanged.
+
+## Behaviour changes in 1.3.2
+
+- **Fixed: a forced build on a site that was also uneven or without headroom aborted.** `force`
+  cleared the occupancy defect and the build then continued with no floor level, which threw instead
+  of building or refusing. `force` now bypasses occupancy only while every shape, height and
+  world-bound check still holds; otherwise the site is refused with that explicit deterministic
+  reason and no block changes are planned. Without `force` the message is unchanged.
+- **Fixed: `force`/`items` were silently ignored on an additive upgrade.** They are now rejected with
+  a clear message before any block change or supply, because an additive upgrade never overwrites an
+  existing house or chest. They remain valid for a fresh blocked site.
+- **Fixed: an operator build could race the automatic house pass.** `/spawnkit build confirm` on a
+  zone-built world whose house pass had not recorded completion ran the additive pass over the bare
+  zone and marked the world complete, so the house shell was never built. The command now leaves such
+  a world to its automatic house build and reports that nothing was changed, so the two writers never
+  overlap and the house is not lost.
