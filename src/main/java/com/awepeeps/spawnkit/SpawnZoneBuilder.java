@@ -174,7 +174,16 @@ final class SpawnZoneBuilder {
 
     SpawnZonePolicy.Defect defect = SpawnZonePolicy.firstDefect(
         anyVoid, lavaBeneath, occupied, unevenTerrain, outOfHeight, outsideBorder);
-    if (defect == SpawnZonePolicy.Defect.OCCUPIED && force) {
+    if (force && defect == SpawnZonePolicy.Defect.OCCUPIED) {
+      // Force bypasses occupancy only. The terrain shape is never overridden, so a site that is
+      // both occupied and uneven (or without headroom) is refused with that explicit shape/height
+      // defect: the occupancy check is ordered first and would otherwise mask it, leaving no floor
+      // level to build on. Recomputing with occupancy false surfaces the shape defect, if any.
+      SpawnZonePolicy.Defect shapeDefect = SpawnZonePolicy.firstDefect(
+          anyVoid, lavaBeneath, false, unevenTerrain, outOfHeight, outsideBorder);
+      if (shapeDefect != null) {
+        return Prepared.refused(SpawnZonePolicy.message(shapeDefect));
+      }
       if (protectedOffender != null) {
         return Prepared.refused("a block entity at (" + protectedOffender[0] + ", "
             + protectedOffender[1] + ", " + protectedOffender[2] + ") holds contents ("

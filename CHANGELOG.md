@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.3.2
+
+Review fixes for 1.3.1. This is a source-only change: it has not been run on a live server yet.
+
+- **Fixed: `force` on a site that is both occupied and uneven (or without headroom) aborted the
+  build.** The occupancy check was ordered ahead of the shape checks, so `force` cleared the
+  occupancy defect and then the build continued with no floor level, throwing
+  (`floorY + 1` unboxed a null) instead of building or refusing. `force` now overrides occupancy
+  only while every shape, height and world-bound check still holds; a site that is also uneven or
+  lacks headroom is refused with that explicit deterministic defect (and plans no block changes).
+  Without `force`, the original "not natural terrain" message is unchanged.
+- **Fixed: `force`/`items` were silently ignored on an additive upgrade.** A world offered an
+  additive upgrade (layout version 2, or already at the current version) now rejects `force` and
+  `items` with a clear message *before* any reservation, block change or supply, because the
+  additive upgrade never overwrites an existing house or chest. `force` remains available for a
+  genuinely blocked fresh site.
+- **Fixed: an operator build could race the automatic house pass.** `/spawnkit build confirm` on a
+  world whose protected zone was built but whose house had not recorded completion ran the additive
+  pass over the bare zone and then marked the world complete, leaving the wall/floor/roof shell
+  unbuilt. The command now leaves that world to its automatic house build (which the command
+  un-defers and which holds the durable reservation) and reports that nothing was changed, so the
+  two never overlap and the house is not lost.
+- Test suite grows from 64 to 75 tests: forced-build refusal on occupied+uneven and
+  occupied+no-headroom sites (with and without `items`), the bounded tree-clear horizon and the
+  `512`-block cap, a container-preservation zero-write default build, the additive-upgrade flag
+  refusal, the house-pass/operator build decision, and the command's argument validation.
+
 ## 1.3.1
 
 Fixes a fresh-world defect that could leave a brand-new world with **no protected core and no

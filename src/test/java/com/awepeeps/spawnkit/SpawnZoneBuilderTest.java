@@ -271,4 +271,127 @@ class SpawnZoneBuilderTest {
     assertFalse(cleared.contains(key(tx, 66, tz)), "a tree outside the footprint is left alone");
     assertFalse(cleared.contains(key(tx + 1, 70, tz)), "its canopy is left alone");
   }
+
+  @Test
+  void treeClearingIsBoundedByTheHorizonAroundTheFootprint() {
+    MapBlockReader reader = flatGround();
+    int tx = SX - 2;
+    int tz = SZ;
+    for (int y = 66; y <= 70; y++) {
+      reader.put(tx, y, tz, Material.OAK_LOG);
+    }
+    // A connected branch of leaves reaching well past the footprint.
+    for (int x = tx; x <= SX + 9; x++) {
+      reader.put(x, 67, tz, Material.OAK_LEAVES);
+    }
+    SpawnZoneBuilder.Prepared prepared = builder().prepare(reader, SX, SZ, layout(),
+        true, true, List.of(), null, false, false);
+    assertTrue(prepared.accepted(), prepared.defect());
+    Set<String> cleared = clearedCells(prepared);
+
+    int horizon = layout().wallRadius() + SpawnZonePolicy.TREE_CLEAR_RADIUS;
+    assertTrue(cleared.contains(key(SX + horizon, 67, tz)),
+        "a leaf at exactly the clearing horizon is removed");
+    assertFalse(cleared.contains(key(SX + horizon + 1, 67, tz)),
+        "a leaf one block past the horizon is left alone");
+    assertFalse(cleared.contains(key(SX + 8, 67, tz)),
+        "the tree clear never reaches eight blocks beyond the footprint");
+  }
+
+  @Test
+  void treeClearingIsCappedAndTheBuildStillCompletes() {
+    MapBlockReader reader = flatGround();
+    int tx = SX - 2;
+    int tz = SZ - 2;
+    for (int y = 66; y <= 70; y++) {
+      reader.put(tx, y, tz, Material.OAK_LOG);
+    }
+    // A connected canopy far larger than the block cap, entirely inside the clearing horizon.
+    int horizon = layout().wallRadius() + SpawnZonePolicy.TREE_CLEAR_RADIUS;
+    for (int x = SX - horizon; x <= SX + horizon; x++) {
+      for (int z = SZ - horizon; z <= SZ + horizon; z++) {
+        for (int y = 67; y <= 69; y++) {
+          reader.put(x, y, z, Material.OAK_LEAVES);
+        }
+      }
+    }
+    SpawnZoneBuilder.Prepared prepared = builder().prepare(reader, SX, SZ, layout(),
+        true, true, List.of(), null, false, false);
+    assertTrue(prepared.accepted(), prepared.defect());
+    assertTrue(prepared.placed().stream().anyMatch(
+            note -> note.contains("cap of " + SpawnZonePolicy.TREE_CLEAR_MAX_BLOCKS)),
+        "the capped clear is reported: " + prepared.placed());
+  }
+
+  @Test
+  void aForcedBuildRefusesAnOccupiedUnevenSiteInsteadOfBuildingWithoutAFloor() {
+    MapBlockReader reader = unevenOccupiedSite();
+    // Without 'force' the original occupancy message is unchanged.
+    SpawnZoneBuilder.Prepared plain = builder().prepare(reader, SX, SZ, layout(),
+        true, true, List.of(), null, false, false);
+    assertFalse(plain.accepted());
+    assertTrue(plain.defect().contains("not natural terrain"), plain.defect());
+    assertTrue(plain.defect().contains("OAK_PLANKS"), plain.defect());
+
+    for (boolean items : List.of(false, true)) {
+      SpawnZoneBuilder.Prepared forced = builder().prepare(reader, SX, SZ, layout(),
+          true, true, List.of(), null, true, items);
+      assertFalse(forced.accepted(), "force must not bypass the uneven terrain");
+      assertEquals("terrain is too uneven to level", forced.defect());
+      assertTrue(forced.edits().isEmpty(), "a refused site plans no block writes");
+      assertTrue(forced.postOps().isEmpty(), "a refused site plans no deferred writes");
+    }
+  }
+
+  @Test
+  void aForcedBuildRefusesAnOccupiedSiteWithoutHeadroom() {
+    MapBlockReader reader = highGroundWithOccupied();
+    SpawnZoneBuilder.Prepared plain = builder().prepare(reader, SX, SZ, layout(),
+        true, true, List.of(), null, false, false);
+    assertFalse(plain.accepted());
+    assertTrue(plain.defect().contains("not natural terrain"), plain.defect());
+
+    for (boolean items : List.of(false, true)) {
+      SpawnZoneBuilder.Prepared forced = builder().prepare(reader, SX, SZ, layout(),
+          true, true, List.of(), null, true, items);
+      assertFalse(forced.accepted(), "force must not bypass the height bound");
+      assertEquals("no headroom or too close to the world floor", forced.defect());
+      assertTrue(forced.edits().isEmpty(), "a refused site plans no block writes");
+      assertTrue(forced.postOps().isEmpty(), "a refused site plans no deferred writes");
+    }
+  }
+
+  @Test
+  void aBlockedContainerRefusesTheDefaultBuildWithNoPlannedWrites() {
+    MapBlockReader reader = flatGround().put(SX + 1, 66, SZ, Material.CHEST).protect(SX + 1, 66, SZ);
+    SpawnZoneBuilder.Prepared prepared = builder().prepare(reader, SX, SZ, layout(),
+        true, true, List.of(), null, false, false);
+    assertFalse(prepared.accepted(), "a container in the footprint refuses the default build");
+    assertTrue(prepared.defect().contains("CHEST"), prepared.defect());
+    assertTrue(prepared.edits().isEmpty(), "a refused site plans no block writes");
+    assertTrue(prepared.postOps().isEmpty(), "a refused site plans no deferred writes");
+  }
+
+  /** Flat ground with one non-natural block and a footprint column raised beyond the variation. */
+  private static MapBlockReader unevenOccupiedSite() {
+    MapBlockReader reader = flatGround().put(SX, 66, SZ, Material.OAK_PLANKS);
+    for (int y = 66; y <= 70; y++) {
+      reader.put(SX + 3, y, SZ + 3, Material.DIRT);
+    }
+    return reader;
+  }
+
+  /** Ground so close to the world ceiling that no floor with headroom fits, plus a blocked cell. */
+  private static MapBlockReader highGroundWithOccupied() {
+    MapBlockReader reader = new MapBlockReader(-64, 320);
+    for (int dx = -8; dx <= 8; dx++) {
+      for (int dz = -8; dz <= 8; dz++) {
+        reader.put(SX + dx, 316, SZ + dz, Material.STONE);
+        reader.put(SX + dx, 317, SZ + dz, Material.DIRT);
+        reader.put(SX + dx, 318, SZ + dz, Material.GRASS_BLOCK);
+      }
+    }
+    reader.put(SX, 319, SZ, Material.OAK_PLANKS);
+    return reader;
+  }
 }
