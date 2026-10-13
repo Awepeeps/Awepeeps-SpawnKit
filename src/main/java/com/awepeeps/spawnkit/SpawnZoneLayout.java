@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.bukkit.Material;
 import org.bukkit.block.BlockFace;
 
 /**
@@ -20,6 +21,10 @@ import org.bukkit.block.BlockFace;
  *  -1                   house floor (destructible) except the 3x3 core top layer (protected)
  *  -coreDepth .. -1     3x3 core (protected, solid)
  * </pre>
+ *
+ * <p>The ring of cells between the protected 3x3 and the walls carries the furnishings. Nothing is
+ * ever placed inside the protected zone, on the doorway column or in the walkable route from the
+ * core top to the door.
  */
 final class SpawnZoneLayout {
   /** Blocks the builder places, and what each one is. */
@@ -34,7 +39,15 @@ final class SpawnZoneLayout {
     BED_HEAD,
     CHEST,
     CRAFTING_TABLE,
-    WALL_TORCH
+    ANVIL,
+    FURNACE,
+    LODESTONE,
+    EXTRA,
+    WALL_TORCH,
+    EXTERIOR_TORCH,
+    BANNER_LEFT,
+    BANNER_RIGHT,
+    DOORSTEP
   }
 
   static final int CORE_RADIUS = 1;
@@ -49,12 +62,15 @@ final class SpawnZoneLayout {
   static final int MIN_CHESTS = 1;
   static final int MAX_CHESTS = 4;
   static final int MIN_WALL_HEIGHT = 3;
+  /** The most steps the entry staircase may add below the doorstep. */
+  static final int MAX_ENTRY_STEPS = 3;
 
   private final int coreDepth;
   private final int clearHeight;
   private final int margin;
   private final int beds;
   private final int chests;
+  private final SpawnKitFurnishings furnishings;
 
   private final SpawnRegion core;
   private final SpawnRegion arrival;
@@ -63,18 +79,27 @@ final class SpawnZoneLayout {
   private final SpawnRegion clearance;
   private final List<SpawnBlockPos> doorPath;
   private final Map<SpawnBlockPos, Role> blockPlan;
+  private final Map<SpawnBlockPos, Material> extraMaterials;
+  private final List<BedPlacement> placedBeds;
 
   SpawnZoneLayout(int coreDepth, int clearHeight, int margin, int beds, int chests) {
+    this(coreDepth, clearHeight, margin, beds, chests, SpawnKitFurnishings.defaults());
+  }
+
+  SpawnZoneLayout(int coreDepth, int clearHeight, int margin, int beds, int chests,
+                  SpawnKitFurnishings furnishings) {
     if (!validCoreDepth(coreDepth)) throw new IllegalArgumentException("Invalid core-depth.");
     if (!validClearHeight(clearHeight)) throw new IllegalArgumentException("Invalid clear-height.");
     if (!validMargin(margin)) throw new IllegalArgumentException("Invalid interior margin.");
     if (!validBeds(beds)) throw new IllegalArgumentException("Invalid bed count.");
     if (!validChests(chests)) throw new IllegalArgumentException("Invalid chest count.");
+    if (furnishings == null) throw new IllegalArgumentException("Invalid furnishings.");
     this.coreDepth = coreDepth;
     this.clearHeight = clearHeight;
     this.margin = margin;
     this.beds = beds;
     this.chests = chests;
+    this.furnishings = furnishings;
 
     core = SpawnRegion.of(-CORE_RADIUS, -coreDepth, -CORE_RADIUS, CORE_RADIUS, -1, CORE_RADIUS);
     arrival = SpawnRegion.of(-CORE_RADIUS, 0, -CORE_RADIUS, CORE_RADIUS, clearHeight - 1, CORE_RADIUS);
@@ -91,6 +116,8 @@ final class SpawnZoneLayout {
     for (int z = 0; z <= wallRadius; z++) {
       doorPath.add(new SpawnBlockPos(0, 0, z));
     }
+    extraMaterials = new LinkedHashMap<>();
+    placedBeds = new ArrayList<>();
     blockPlan = buildPlan();
   }
 
@@ -140,7 +167,7 @@ final class SpawnZoneLayout {
 
   /** The values used when the configuration cannot be read at all. */
   static SpawnZoneLayout defaults() {
-    return new SpawnZoneLayout(3, 3, 1, 1, 1);
+    return new SpawnZoneLayout(3, 3, 1, 1, 1, SpawnKitFurnishings.defaults());
   }
 
   int wallRadius() {
@@ -173,6 +200,10 @@ final class SpawnZoneLayout {
 
   int chests() {
     return chests;
+  }
+
+  SpawnKitFurnishings furnishings() {
+    return furnishings;
   }
 
   SpawnRegion core() {
@@ -211,8 +242,31 @@ final class SpawnZoneLayout {
     return new SpawnBlockPos(0, 0, wallRadius() + 1);
   }
 
+  /** The plank doorstep just outside the doorway, flush with the house floor. */
+  SpawnBlockPos doorstep() {
+    return new SpawnBlockPos(0, -1, exteriorZ());
+  }
+
+  /** The outer face of the south wall (one block south of the wall). */
+  int exteriorZ() {
+    return wallRadius() + 1;
+  }
+
+  /** The air cell one or more blocks past the doorstep, where a step may be built. */
+  SpawnBlockPos approach(int step) {
+    return new SpawnBlockPos(0, 0, exteriorZ() + step);
+  }
+
   Map<SpawnBlockPos, Role> blockPlan() {
     return blockPlan;
+  }
+
+  Material extraMaterial(SpawnBlockPos pos) {
+    return extraMaterials.get(pos);
+  }
+
+  List<BedPlacement> bedPlacements() {
+    return List.copyOf(placedBeds);
   }
 
   List<SpawnBlockPos> offsetsWithRole(Role role) {
@@ -225,6 +279,80 @@ final class SpawnZoneLayout {
 
   boolean isSolid(SpawnBlockPos pos) {
     return blockPlan.containsKey(pos);
+  }
+
+  /** True for every role that is a furnishing or an exterior decoration (nothing structural). */
+  static boolean isFurnishing(Role role) {
+    return switch (role) {
+      case ANVIL, FURNACE, LODESTONE, CRAFTING_TABLE, CHEST, BED_FOOT, BED_HEAD,
+          EXTRA, WALL_TORCH, EXTERIOR_TORCH, BANNER_LEFT, BANNER_RIGHT, DOORSTEP -> true;
+      case CORE, FLOOR, WALL, ROOF, DOOR_LOWER, DOOR_UPPER -> false;
+    };
+  }
+
+  /** The furnishing cells in placement order, for the additive upgrade. */
+  List<Map.Entry<SpawnBlockPos, Role>> furnishPlan() {
+    List<Map.Entry<SpawnBlockPos, Role>> result = new ArrayList<>();
+    for (Map.Entry<SpawnBlockPos, Role> entry : blockPlan.entrySet()) {
+      if (isFurnishing(entry.getValue())) result.add(entry);
+    }
+    return result;
+  }
+
+  /** Ring cells that a furnishing may occupy, in a fixed order, never the door route. */
+  List<SpawnBlockPos> ringSlots() {
+    int r = innerRadius();
+    List<SpawnBlockPos> slots = new ArrayList<>();
+    for (int z = -r; z <= r; z++) {
+      for (int x = -r; x <= r; x++) {
+        if (Math.abs(x) <= CORE_RADIUS && Math.abs(z) <= CORE_RADIUS) continue;
+        if (x == 0 && z > 0) continue; // keep the walk from the core to the door open
+        slots.add(new SpawnBlockPos(x, 0, z));
+      }
+    }
+    return slots;
+  }
+
+  /** The ring cells still free after the fixed furnishings, beds, chests and extras. */
+  int maxExtras() {
+    int free = 0;
+    for (SpawnBlockPos slot : ringSlots()) {
+      if (!blockPlan.containsKey(slot)) free++;
+    }
+    return free;
+  }
+
+  List<SpawnBlockPos> extraOffsets() {
+    return offsetsWithRole(Role.EXTRA);
+  }
+
+  List<SpawnBlockPos> chestOffsets() {
+    return offsetsWithRole(Role.CHEST);
+  }
+
+  /** The exterior decoration cells (torches and banners) on the south wall's outer face. */
+  List<SpawnBlockPos> exteriorOffsets() {
+    List<SpawnBlockPos> result = new ArrayList<>();
+    result.addAll(offsetsWithRole(Role.EXTERIOR_TORCH));
+    result.addAll(offsetsWithRole(Role.BANNER_LEFT));
+    result.addAll(offsetsWithRole(Role.BANNER_RIGHT));
+    return result;
+  }
+
+  SpawnBlockPos anvilOffset() {
+    return new SpawnBlockPos(-1, 0, -innerRadius());
+  }
+
+  SpawnBlockPos craftingTableOffset() {
+    return new SpawnBlockPos(0, 0, -innerRadius());
+  }
+
+  SpawnBlockPos furnaceOffset() {
+    return new SpawnBlockPos(innerRadius(), 0, 0);
+  }
+
+  SpawnBlockPos lodestoneOffset() {
+    return new SpawnBlockPos(innerRadius(), 0, -innerRadius());
   }
 
   private Map<SpawnBlockPos, Role> buildPlan() {
@@ -272,12 +400,13 @@ final class SpawnZoneLayout {
       }
     }
 
+    placeFixedFurnishings(plan);
     placeBeds(plan);
     placeChests(plan);
-    plan.put(new SpawnBlockPos(0, 0, -innerRadius()), Role.CRAFTING_TABLE);
-    for (SpawnBlockPos torch : torchOffsets()) {
-      plan.putIfAbsent(torch, Role.WALL_TORCH);
-    }
+    placeInteriorTorches(plan);
+    placeExteriorDecorations(plan);
+    placeDoorstep(plan);
+    placeExtras(plan);
     return plan;
   }
 
@@ -285,37 +414,32 @@ final class SpawnZoneLayout {
     return pos.x() == 0 && pos.z() == wallRadius() && (pos.y() == 0 || pos.y() == 1);
   }
 
-  /**
-   * Beds, in placement order: south-east, south-west, north-east, north-west. Each bed is a
-   * two-block head/foot pair occupying ring cells only (never the protected 3x3 centre).
-   */
-  List<BedPlacement> bedPlacements() {
-    int r = innerRadius();
-    List<BedPlacement> slots = List.of(
-        new BedPlacement(new SpawnBlockPos(1, 0, r), 1),
-        new BedPlacement(new SpawnBlockPos(-1, 0, r), -1),
-        new BedPlacement(new SpawnBlockPos(1, 0, -r), 1),
-        new BedPlacement(new SpawnBlockPos(-1, 0, -r), -1));
-    return slots.subList(0, Math.min(beds, slots.size()));
-  }
-
-  private void placeBeds(Map<SpawnBlockPos, Role> plan) {
-    for (BedPlacement bed : bedPlacements()) {
-      SpawnBlockPos foot = bed.foot();
-      SpawnBlockPos head = foot.offset(bed.headDirection(), 0, 0);
-      if (plan.containsKey(foot) || plan.containsKey(head)) continue;
-      plan.put(foot, Role.BED_FOOT);
-      plan.put(head, Role.BED_HEAD);
+  private void placeFixedFurnishings(Map<SpawnBlockPos, Role> plan) {
+    if (furnishings.craftingTable()) {
+      plan.putIfAbsent(craftingTableOffset(), Role.CRAFTING_TABLE);
+    }
+    if (furnishings.anvil()) {
+      plan.putIfAbsent(anvilOffset(), Role.ANVIL);
+    }
+    if (furnishings.furnace()) {
+      plan.putIfAbsent(furnaceOffset(), Role.FURNACE);
+    }
+    if (furnishings.lodestone()) {
+      plan.putIfAbsent(lodestoneOffset(), Role.LODESTONE);
     }
   }
 
+  /**
+   * Chests, in placement order. The first is the owner's chest on the back (north) wall; the rest
+   * sit along the south wall, clear of the beds. A candidate whose cell is already taken is skipped.
+   */
   private void placeChests(Map<SpawnBlockPos, Role> plan) {
     int r = innerRadius();
     List<SpawnBlockPos> candidates = List.of(
-        new SpawnBlockPos(r, 0, 0),
-        new SpawnBlockPos(-r, 0, 0),
-        new SpawnBlockPos(r, 0, 1),
-        new SpawnBlockPos(-r, 0, 1));
+        new SpawnBlockPos(1, 0, -r),
+        new SpawnBlockPos(-r, 0, r),
+        new SpawnBlockPos(-1, 0, r),
+        new SpawnBlockPos(1, 0, r));
     int placed = 0;
     for (SpawnBlockPos candidate : candidates) {
       if (placed >= chests) break;
@@ -325,25 +449,86 @@ final class SpawnZoneLayout {
     }
   }
 
-  List<SpawnBlockPos> chestOffsets() {
-    return offsetsWithRole(Role.CHEST);
-  }
-
-  private List<SpawnBlockPos> torchOffsets() {
+  /**
+   * Beds, in placement order, along the west and east walls. Each bed is a two-block foot/head pair
+   * occupying ring cells only (never the protected 3x3 centre); a pair whose cells are taken is
+   * skipped rather than overlapping another piece.
+   */
+  private void placeBeds(Map<SpawnBlockPos, Role> plan) {
     int r = innerRadius();
-    return List.of(
-        new SpawnBlockPos(1, 1, r),
-        new SpawnBlockPos(-1, 1, r),
-        new SpawnBlockPos(1, 1, -r),
-        new SpawnBlockPos(-1, 1, -r),
-        new SpawnBlockPos(r, 1, 0),
-        new SpawnBlockPos(-r, 1, 0));
+    List<BedPlacement> candidates = List.of(
+        new BedPlacement(new SpawnBlockPos(-r, 0, 0), BlockFace.SOUTH),
+        new BedPlacement(new SpawnBlockPos(r, 0, 1), BlockFace.SOUTH),
+        new BedPlacement(new SpawnBlockPos(-r, 0, -1), BlockFace.NORTH),
+        new BedPlacement(new SpawnBlockPos(r, 0, -1), BlockFace.NORTH));
+    int placed = 0;
+    for (BedPlacement bed : candidates) {
+      if (placed >= beds) break;
+      SpawnBlockPos foot = bed.foot();
+      SpawnBlockPos head = bed.head();
+      if (plan.containsKey(foot) || plan.containsKey(head)) continue;
+      plan.put(foot, Role.BED_FOOT);
+      plan.put(head, Role.BED_HEAD);
+      placedBeds.add(bed);
+      placed++;
+    }
   }
 
-  /** A bed's foot offset and the X direction (+1/-1) its head lies in. */
-  record BedPlacement(SpawnBlockPos foot, int headDirection) {
+  /** Interior wall torches, high on the back and side walls so nothing hangs over a container. */
+  private void placeInteriorTorches(Map<SpawnBlockPos, Role> plan) {
+    int r = innerRadius();
+    for (SpawnBlockPos torch : List.of(
+        new SpawnBlockPos(-1, 2, -r),
+        new SpawnBlockPos(1, 2, -r),
+        new SpawnBlockPos(-r, 2, 0),
+        new SpawnBlockPos(r, 2, 0))) {
+      plan.putIfAbsent(torch, Role.WALL_TORCH);
+    }
+  }
+
+  /**
+   * The wall torch on each side of the doorway and the two wall banners, all on the outer (south)
+   * face of the south wall at head height. Banners hang further out than the torches, so the two
+   * never share a cell and neither sits in the doorway column or on the doorstep.
+   */
+  private void placeExteriorDecorations(Map<SpawnBlockPos, Role> plan) {
+    int z = exteriorZ();
+    if (furnishings.exteriorTorches()) {
+      plan.putIfAbsent(new SpawnBlockPos(-1, 1, z), Role.EXTERIOR_TORCH);
+      plan.putIfAbsent(new SpawnBlockPos(1, 1, z), Role.EXTERIOR_TORCH);
+    }
+    if (furnishings.exteriorBanners()) {
+      plan.putIfAbsent(new SpawnBlockPos(-2, 1, z), Role.BANNER_LEFT);
+      plan.putIfAbsent(new SpawnBlockPos(2, 1, z), Role.BANNER_RIGHT);
+    }
+  }
+
+  private void placeDoorstep(Map<SpawnBlockPos, Role> plan) {
+    plan.putIfAbsent(doorstep(), Role.DOORSTEP);
+  }
+
+  /** Extra single-block utilities, into the free ring cells, in a fixed order. */
+  private void placeExtras(Map<SpawnBlockPos, Role> plan) {
+    List<SpawnBlockPos> slots = ringSlots();
+    int index = 0;
+    for (Material extra : furnishings.extras()) {
+      while (index < slots.size() && plan.containsKey(slots.get(index))) {
+        index++;
+      }
+      if (index >= slots.size()) break;
+      SpawnBlockPos slot = slots.get(index++);
+      plan.put(slot, Role.EXTRA);
+      extraMaterials.put(slot, extra);
+    }
+  }
+
+  /**
+   * A bed's foot offset and the direction (one step along one axis) its head lies in. The facing is
+   * the direction from foot to head, which is what vanilla's bed block data uses.
+   */
+  record BedPlacement(SpawnBlockPos foot, BlockFace facing) {
     SpawnBlockPos head() {
-      return foot.offset(headDirection, 0, 0);
+      return foot.offset(facing.getModX(), 0, facing.getModZ());
     }
   }
 
@@ -358,5 +543,16 @@ final class SpawnZoneLayout {
     if (offset.z() == -r) return BlockFace.SOUTH; // mounted on the north wall
     if (offset.x() == r) return BlockFace.WEST; // mounted on the east wall
     return BlockFace.EAST; // mounted on the west wall
+  }
+
+  /** Every exterior torch and banner hangs on the outer face of the south wall, facing south. */
+  BlockFace exteriorFacing(SpawnBlockPos offset) {
+    return BlockFace.SOUTH;
+  }
+
+  /** The wall block an exterior torch or banner is mounted on (behind it). */
+  SpawnBlockPos exteriorMounting(SpawnBlockPos offset) {
+    BlockFace facing = exteriorFacing(offset);
+    return offset.offset(-facing.getModX(), -facing.getModY(), -facing.getModZ());
   }
 }

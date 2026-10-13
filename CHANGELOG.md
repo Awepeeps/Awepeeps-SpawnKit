@@ -1,5 +1,40 @@
 # Changelog
 
+## 1.3.0
+
+Furnished house layout, published for the owner's waypoint-plugin tests. The protected zone and
+every 1.2.1 guarantee are unchanged.
+
+- New default house layout. The ring between the protected 3x3 core and the walls is furnished:
+  anvil, crafting table and chest along the back (north) wall, an unlit furnace against the east
+  wall, the bed against the west wall, and a lodestone in the north-east ring cell. The doorway
+  and a two-high walkable route from every core-top cell to the door stay clear.
+- Exterior decorations on the outer face of the south wall: a wall torch at head height on each
+  side of the doorway, and a white wall banner to the left of the door and a red one to the right
+  (seen from outside), each on a solid wall block and facing south. The lodestone and the banners
+  are real placed blocks, so a companion waypoint plugin can be tested against them.
+- Plank doorstep kept flush with the house floor; when the ground outside the door is lower, up to
+  three plank steps are built down to it, and when it is higher a walkable approach is cleared.
+  Non-natural blocks are never destroyed for a step. Interior wall torches now hang higher
+  (`y = 2`) on the back and side walls so nothing hangs over a container.
+- New `spawn-kit.house.furnishings` config section: `anvil`, `furnace`, `lodestone`,
+  `crafting-table`, `exterior-banners`, `exterior-torches` (all default `true`), `banners.left`
+  (`WHITE`) and `banners.right` (`RED`) validated against the dye colours, and `extras` from a fixed
+  allow-list of harmless single-block utilities. Unknown or disallowed extras are skipped with one
+  warning (never an error); too many extras are truncated with one log line. A config without the
+  section gets the new defaults.
+- Layout version bumped to 3. A fresh world gets the full new layout automatically; a 1.2.x world
+  (layout version 2) is not rebuilt automatically and logs once that an upgrade is available.
+  `/spawnkit build confirm` on such a world performs an additive upgrade that only fills cells that
+  are air or replaceable natural blocks, never removes or replaces an existing block, never touches
+  an existing chest (unless `supplies` is given), logs each skipped piece with a reason, and records
+  version 3; a second run is a no-op. A 1.1.x world keeps its manual-migration behaviour.
+- Test: the suite grows from 32 to 46 tests (furnishing geometry and uniqueness across margins and
+  the maximum bed/chest counts, the two-high door route with the maximum extras, exterior
+  mounting/facing, anvil support / chest headroom / reachability, config defaults and toggles,
+  extras validation and truncation, banner-colour fallback, the upgrade policy, and entry-step
+  planning).
+
 ## 1.2.1
 
 Review fixes for 1.2.0. Nothing in 1.2.0 was run on a server yet.

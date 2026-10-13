@@ -30,7 +30,8 @@ import org.bukkit.plugin.java.JavaPlugin;
  * terrain is unsuitable. Terrain is loaded asynchronously and ticketed only for the build.
  */
 final class SpawnKitManager {
-  private static final int LAYOUT_VERSION = 2;
+  private static final int LAYOUT_VERSION = 3;
+  private static final int PREVIOUS_LAYOUT_VERSION = 2;
   /** Vanilla's default, used only if the game rule cannot be read at all. */
   private static final int DEFAULT_RESPAWN_RADIUS = 10;
   private static final String BLUEMAP_PLUGIN = "BlueMap";
@@ -52,6 +53,7 @@ final class SpawnKitManager {
   private final Map<UUID, Set<Long>> outstandingTickets = new HashMap<>();
   private final Set<String> pendingSetups = new HashSet<>();
   private final Set<String> upgradeLogged = new HashSet<>();
+  private final Set<String> previousLayoutLogged = new HashSet<>();
   private final Set<String> interruptedLogged = new HashSet<>();
   private boolean invalidConfigLogged;
   private boolean missingBlueMapLogged;
@@ -150,6 +152,13 @@ final class SpawnKitManager {
           repairZone(world, worldPath);
         }
       }
+      case UPGRADE_AVAILABLE -> {
+        applyStoredZone(world, worldPath);
+        if (!pendingSetups.contains(world.getUID().toString())) {
+          repairZone(world, worldPath);
+        }
+        logPreviousLayout(world);
+      }
       case IN_PROGRESS -> {
         // A reservation this instance created is still building; only a reservation left behind by
         // an earlier run (or a crash) is an interruption worth warning about.
@@ -223,6 +232,10 @@ final class SpawnKitManager {
       logUpgrade(world);
       return;
     }
+    if (state == SpawnZonePolicy.SetupState.UPGRADE_AVAILABLE) {
+      logPreviousLayout(world);
+      return;
+    }
     if (state != SpawnZonePolicy.SetupState.CURRENT) return; // wait for the protected zone
     String worldId = world.getUID().toString();
     if (pendingSetups.contains(worldId)) return;
@@ -234,6 +247,12 @@ final class SpawnKitManager {
 
   private void beginBuild(World world, String worldPath, String kind, boolean houseEnabled,
                           boolean chestEnabled, boolean supplies, SpawnRegion existingCore) {
+    beginBuild(world, worldPath, kind, houseEnabled, chestEnabled, supplies, existingCore, false);
+  }
+
+  private void beginBuild(World world, String worldPath, String kind, boolean houseEnabled,
+                          boolean chestEnabled, boolean supplies, SpawnRegion existingCore,
+                          boolean upgrade) {
     String worldId = world.getUID().toString();
     if (System.nanoTime() < retryAfterNanos.getOrDefault(worldId, 0L)) return;
 
@@ -257,12 +276,12 @@ final class SpawnKitManager {
     }
     chunks.whenComplete((loaded, error) -> Bukkit.getScheduler().runTask(plugin,
         () -> afterChunksLoaded(world, worldPath, kind, houseEnabled, chestEnabled, supplies,
-            existingCore, loaded, error)));
+            existingCore, upgrade, loaded, error)));
   }
 
   private CompletableFuture<List<Chunk>> loadBuildChunks(World world) {
     Location spawn = world.getSpawnLocation();
-    int extent = layout.wallRadius() + 2;
+    int extent = layout.wallRadius() + SpawnZoneLayout.MAX_ENTRY_STEPS + 2;
     SpawnKitPolicy.ChunkBounds bounds =
         SpawnKitPolicy.chunkBounds(spawn.getBlockX(), spawn.getBlockZ(), extent);
     List<CompletableFuture<Chunk>> futures = new ArrayList<>();
@@ -277,7 +296,7 @@ final class SpawnKitManager {
 
   private void afterChunksLoaded(World world, String worldPath, String kind, boolean houseEnabled,
                                  boolean chestEnabled, boolean supplies, SpawnRegion existingCore,
-                                 List<Chunk> chunks, Throwable error) {
+                                 boolean upgrade, List<Chunk> chunks, Throwable error) {
     String worldId = world.getUID().toString();
     if (error != null) {
       abandonBuild(worldPath, worldId, "terrain loading failed");
@@ -294,6 +313,25 @@ final class SpawnKitManager {
     try {
       for (Chunk chunk : chunks) {
         retainTicket(world, chunk, ticketed);
+      }
+      if (upgrade) {
+        int sx = store.getInt(worldPath + ".spawn-x");
+        int sy = store.getInt(worldPath + ".spawn-y");
+        int sz = store.getInt(worldPath + ".spawn-z");
+        if (!store.contains(worldPath + ".spawn-x")) {
+          releaseTickets(world, ticketed);
+          abandonBuild(worldPath, worldId, "no recorded zone");
+          logDeferredOnce(worldId, "Spawn house upgrade deferred: no recorded zone location.");
+          return;
+        }
+        boolean chestExists = store.getBoolean(worldPath + ".chest-placed", false);
+        SpawnZoneBuilder.Prepared prepared = builder.prepareUpgrade(world, layout,
+            sx, sy, sz, chestExists, chestEnabled, supplies ? stacks : List.of());
+        builder.execute(prepared, () -> {
+          releaseTickets(world, ticketed);
+          completeUpgrade(world, worldPath, supplies);
+        });
+        return;
       }
       SpawnZoneBuilder.Prepared prepared = builder.prepare(world, layout, houseEnabled, chestEnabled,
           supplies ? stacks : List.of(), existingCore);
@@ -388,8 +426,37 @@ final class SpawnKitManager {
     lastDeferral.remove(worldId);
     interruptedLogged.remove(worldId);
     upgradeLogged.remove(worldId);
+    previousLayoutLogged.remove(worldId);
     teleportPlayersOutOfFootprint(world, worldPath);
     plugin.getLogger().info("Built the " + kind + " spawn layout in world " + world.getName() + ".");
+  }
+
+  /**
+   * Records a finished additive upgrade. The version is only written once the world changes have
+   * run, so a failed upgrade leaves the world at version 2 and is retried on the next command.
+   */
+  private void completeUpgrade(World world, String worldPath, boolean supplies) {
+    String worldId = world.getUID().toString();
+    pendingSetups.remove(worldId);
+    store.set(worldPath + ".spawn-zone-complete", true);
+    store.set(worldPath + ".layout-version", LAYOUT_VERSION);
+    store.set(worldPath + ".setup-complete", true);
+    store.set(worldPath + ".house-built", true);
+    if (supplies) {
+      store.set(worldPath + ".chest-placed", true);
+    }
+    store.set(worldPath + ".setup-in-progress", false);
+    saveStore("Spawn house upgrade changed the world, but the record could not be saved.");
+    applyStoredZone(world, worldPath);
+    retryAfterNanos.remove(worldId);
+    retryAttempts.remove(worldId);
+    lastDeferral.remove(worldId);
+    interruptedLogged.remove(worldId);
+    upgradeLogged.remove(worldId);
+    previousLayoutLogged.remove(worldId);
+    teleportPlayersOutOfFootprint(world, worldPath);
+    plugin.getLogger().info("Upgraded the spawn house to layout version " + LAYOUT_VERSION
+        + " in world " + world.getName() + ".");
   }
 
   private void abandonBuild(String worldPath, String worldId, String reason) {
@@ -415,7 +482,7 @@ final class SpawnKitManager {
 
   // ---- Explicit command ---------------------------------------------------------------------
 
-  /** Builds (or migrates) the layout for a world on operator request. */
+  /** Builds (or upgrades) the layout for a world on operator request. */
   String buildNow(World world, boolean withSupplies) {
     if (world.getEnvironment() != World.Environment.NORMAL) {
       return "The spawn layout is only built in the Overworld.";
@@ -430,8 +497,17 @@ final class SpawnKitManager {
       return "Supplies were requested but spawn-kit.house.chest is not configured.";
     }
     String worldPath = "worlds." + world.getUID();
-    SpawnRegion existingCore = recordedZone(world, worldPath);
     upgradeLogged.remove(world.getUID().toString());
+    previousLayoutLogged.remove(world.getUID().toString());
+    if (classify(worldPath) == SpawnZonePolicy.SetupState.UPGRADE_AVAILABLE) {
+      if (!store.contains(worldPath + ".spawn-x")) {
+        return "This world has no recorded spawn zone; run the command after a fresh world reset.";
+      }
+      beginBuild(world, worldPath, "upgrade", true, chestConfigured(), withSupplies, null, true);
+      return "Spawn house upgrade started for world " + world.getName()
+          + (withSupplies ? " (with supplies)." : " (without supplies).");
+    }
+    SpawnRegion existingCore = recordedZone(world, worldPath);
     beginBuild(world, worldPath, "operator", true, chestConfigured(), withSupplies, existingCore);
     return "Spawn layout build started for world " + world.getName()
         + (withSupplies ? " (with supplies)." : " (without supplies).");
@@ -523,13 +599,16 @@ final class SpawnKitManager {
   // ---- Records and logging ------------------------------------------------------------------
 
   private SpawnZonePolicy.SetupState classify(String worldPath) {
-    boolean hasLayoutVersion = store.getInt(worldPath + ".layout-version", 0) >= LAYOUT_VERSION;
+    int version = store.getInt(worldPath + ".layout-version", 0);
+    boolean hasCurrentLayout = version >= LAYOUT_VERSION;
+    boolean hasPreviousLayout = version == PREVIOUS_LAYOUT_VERSION;
     boolean hasLegacy = store.contains(worldPath + ".setup-complete")
         || store.contains(worldPath + ".issued")
         || store.contains(worldPath + ".x");
     boolean inProgress = store.getBoolean(worldPath + ".setup-in-progress", false);
     boolean zoneComplete = store.getBoolean(worldPath + ".spawn-zone-complete", false);
-    return SpawnZonePolicy.classifySetup(hasLayoutVersion, hasLegacy, inProgress, zoneComplete);
+    return SpawnZonePolicy.classifySetup(
+        hasCurrentLayout, hasPreviousLayout, hasLegacy, inProgress, zoneComplete);
   }
 
   private void logUpgrade(World world) {
@@ -540,6 +619,20 @@ final class SpawnKitManager {
             + " that world to place the new protected spawn layout (add 'supplies' only to hand out"
             + " a new chest). Clear plugins/AwepeepsSpawnKit/issued-kits.yml after a fresh world"
             + " reset.");
+  }
+
+  /**
+   * Logs, once, that a 1.2.x world can be upgraded. It is deliberately not applied automatically:
+   * players may have changed the house, and the upgrade is additive, so it waits for an operator.
+   */
+  private void logPreviousLayout(World world) {
+    if (!previousLayoutLogged.add(world.getUID().toString())) return;
+    plugin.getLogger().warning(
+        "World " + world.getName() + " has a 1.2.x spawn house (layout version 2). A new furnished"
+            + " layout is available and is NOT applied automatically, because the house may have"
+            + " changed. Run '/spawnkit build confirm' in that world to add the new furnishings"
+            + " additively (existing blocks and chest contents are kept); add 'supplies' only to hand"
+            + " out another set of items.");
   }
 
   private void retryLater(String worldId) {

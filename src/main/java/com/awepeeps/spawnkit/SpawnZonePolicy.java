@@ -1,5 +1,6 @@
 package com.awepeeps.spawnkit;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import org.bukkit.Material;
@@ -68,7 +69,20 @@ final class SpawnZonePolicy {
     FRESH,
     IN_PROGRESS,
     CURRENT,
+    /** Built by an older layout version; can be upgraded additively on request. */
+    UPGRADE_AVAILABLE,
     LEGACY_UNMIGRATED
+  }
+
+  /**
+   * A planned entry staircase. {@code treads} holds the absolute Y of each step's top surface,
+   * ordered outwards from the doorstep; it is empty when the ground is level with or higher than
+   * the doorstep (in which case a walkable approach is cleared instead of stepped).
+   */
+  record EntrySteps(List<Integer> treads, boolean groundHigher, boolean truncated) {
+    int count() {
+      return treads.size();
+    }
   }
 
   private static final Set<Material> NATURAL_GROUND = Set.of(
@@ -232,6 +246,18 @@ final class SpawnZonePolicy {
     return Math.max(min, Math.min(max, value));
   }
 
+  /**
+   * Whether an additive upgrade may place one piece. A piece is only placed where the target cell
+   * is replaceable and its support exists, and the supply chest is never (re)placed while any chest
+   * already exists. This is the whole upgrade policy, so the "never overwrite" rule is testable
+   * without a world.
+   */
+  static boolean upgradeAllowed(SpawnZoneLayout.Role role, boolean targetReplaceable,
+                                boolean supportPresent, boolean chestExists) {
+    if (role == SpawnZoneLayout.Role.CHEST && chestExists) return false;
+    return targetReplaceable && supportPresent;
+  }
+
   static boolean anyInRegion(SpawnRegion region, List<SpawnBlockPos> positions) {
     for (SpawnBlockPos pos : positions) {
       if (region.contains(pos)) return true;
@@ -265,16 +291,44 @@ final class SpawnZonePolicy {
   /**
    * Classifies a world from its durable record.
    *
-   * @param hasLayoutVersion the record contains a {@code layout-version} at or above the current one
+   * @param hasCurrentLayout the record's {@code layout-version} is at or above the current one
+   * @param hasPreviousLayout the record's {@code layout-version} is the immediately previous one
    * @param hasLegacyRecord the record contains any 1.1.x key (issued, setup-complete, x/y/z)
    * @param inProgress a build reservation is present
    * @param zoneComplete the protected core is recorded as built for this world
    */
-  static SetupState classifySetup(boolean hasLayoutVersion, boolean hasLegacyRecord,
-                                  boolean inProgress, boolean zoneComplete) {
-    if (hasLayoutVersion && zoneComplete) return SetupState.CURRENT;
+  static SetupState classifySetup(boolean hasCurrentLayout, boolean hasPreviousLayout,
+                                  boolean hasLegacyRecord, boolean inProgress,
+                                  boolean zoneComplete) {
+    if (hasCurrentLayout && zoneComplete) return SetupState.CURRENT;
     if (inProgress) return SetupState.IN_PROGRESS;
-    if (!hasLayoutVersion && hasLegacyRecord) return SetupState.LEGACY_UNMIGRATED;
+    if (hasPreviousLayout && zoneComplete) return SetupState.UPGRADE_AVAILABLE;
+    if (!hasCurrentLayout && !hasPreviousLayout && hasLegacyRecord) {
+      return SetupState.LEGACY_UNMIGRATED;
+    }
     return SetupState.FRESH;
+  }
+
+  /**
+   * Plans the entry steps below the doorstep.
+   *
+   * <p>{@code doorstepTopY} and {@code groundTopY} are the Y of the top surface of the doorstep
+   * block and of the terrain just past it. When the ground is higher, the plan asks for a cleared
+   * approach ({@code groundHigher}); when it is lower, one tread is added per block of drop, up to
+   * {@code maxSteps} (further drop is left as the final step down to the ground, marked
+   * {@code truncated}).
+   */
+  static EntrySteps entrySteps(int doorstepTopY, int groundTopY, int maxSteps) {
+    if (groundTopY >= doorstepTopY) {
+      return new EntrySteps(List.of(), true, false);
+    }
+    int gap = doorstepTopY - groundTopY;
+    int wanted = Math.max(0, gap - 1);
+    int count = Math.min(wanted, Math.max(0, maxSteps));
+    List<Integer> treads = new ArrayList<>(count);
+    for (int step = 1; step <= count; step++) {
+      treads.add(doorstepTopY - step);
+    }
+    return new EntrySteps(List.copyOf(treads), false, wanted > count);
   }
 }

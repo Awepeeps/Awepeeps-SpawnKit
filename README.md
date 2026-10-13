@@ -63,40 +63,69 @@ The plugin does not protect it and does not rebuild it.
 
 Looking straight down at the arrival level (`y = 0`, the plane the player's feet occupy). `x`
 increases east, `z` increases south. `*` = protected arrival air, `#` = wall, `D` = door,
-`B` = bed, `C` = chest, `t` = crafting table, `.` = walkable interior.
+`A` = anvil, `t` = crafting table, `C` = chest, `L` = lodestone, `F` = furnace, `B` = bed foot,
+`b` = bed head, `.` = walkable interior.
 
 ```
         x=-3  -2  -1   0   1   2   3
       +-------------------------------+
  z=-3 |  #   #   #   #   #   #   #    |
- z=-2 |  #   .   .   t   .   .   #    |
+ z=-2 |  #   .   A   t   C   L   #    |
  z=-1 |  #   .   *   *   *   .   #    |
- z= 0 |  #   .   *   *   *   C   #    |
- z= 1 |  #   .   *   *   *   .   #    |
- z= 2 |  #   .   .   .   B   B   #    |
+ z= 0 |  #   B   *   *   *   F   #    |
+ z= 1 |  #   b   *   *   *   .   #    |
+ z= 2 |  #   .   .   .   .   .   #    |
  z= 3 |  #   #   #   D   #   #   #    |
       +-------------------------------+
 ```
 
 The 3x3 in the middle (`*`, plus the block you stand on) is the protected zone. The ring of `.`
-cells between it and the walls is ordinary house interior. The door sits in the south wall; the
-column at `(0, 0..1, 3)` is the walkable exit.
+cells between it and the walls is ordinary house interior; the furnishings lie in that ring and
+never inside the protected zone. The anvil, crafting table, chest and lodestone run along the back
+(north) wall, the furnace is against the east wall and the bed against the west wall, matching the
+owner's arrangement. The door sits in the south wall; the column at `(0, 0..1, 3)` is the walkable
+exit, and the cell at `(0, 0..1, 2)` is kept clear so the route from any core-top cell to the door
+is always two-high walkable air.
+
+### Front elevation (looking north at the south wall, from outside)
+
+`x` is horizontal, `y` vertical. `W` = white wall banner, `R` = red wall banner, `T` = wall torch,
+`D` = door, `S` = plank doorstep, `#` = cobblestone wall, `~` = a step built down to the terrain
+when the ground outside is lower.
+
+```
+        x=-3  -2  -1   0   1   2   3
+   y= 3 |  R   R   R   R   R   R   R  |  oak-plank roof
+   y= 2 |  #   #   #   #   #   #   #  |  wall
+   y= 1 |  #   W   T   D   T   R   #  |  banners and torches at head height
+   y= 0 |  #   #   #   D   #   #   #  |  door lower half
+   y=-1 |  .   .   .   S   .   .   .  |  plank doorstep
+   y=-2 |  .   .   .   ~   .   .   .  |  one step per block of drop (up to 3)
+```
+
+The white banner is on the wall to the left of the door and the red one to the right, as seen from
+outside facing the door; a wall torch hangs on each side of the doorway. All four hang on the outer
+face of the south wall, facing south, and none sits in the doorway column or on the doorstep path.
 
 ### Section view (at `x = 0`, looking west)
 
 `y` is vertical, `z` horizontal. `K` = protected core block, `*` = protected arrival air,
-`F` = house floor, `#` = wall, `R` = roof, `D` = door, `t` = crafting table, `f` = foundation fill.
+`F` = house floor, `#` = wall, `R` = roof, `D` = door, `t` = crafting table, `S` = plank doorstep,
+`f` = foundation fill.
 
 ```
-        z=-3  -2  -1   0   1   2   3
-   y= 3 |  R   R   R   R   R   R   R  |  roofline (destructible)
-   y= 2 |  #   .   *   *   *   .   #  |
-   y= 1 |  #   .   *   *   *   .   D  |  door upper half
-   y= 0 |  #   t   *   *   *   .   D  |  floor level (feet)
-   y=-1 |  F   F   K   K   K   F   F  |  core top layer / house floor
-   y=-2 |  f   f   K   K   K   f   f  |
-   y=-3 |  .   .   K   K   K   .   .  |  core bottom
+        z=-3  -2  -1   0   1   2   3   4
+   y= 3 |  R   R   R   R   R   R   R   .  |  roofline (destructible)
+   y= 2 |  #   .   *   *   *   .   #   .  |
+   y= 1 |  #   .   *   *   *   .   D   .  |  door upper half
+   y= 0 |  #   t   *   *   *   .   D   .  |  crafting table / floor level (feet)
+   y=-1 |  F   F   K   K   K   F   F   S  |  core top / house floor / plank doorstep
+   y=-2 |  f   f   K   K   K   f   f   .  |
+   y=-3 |  .   .   K   K   K   .   .   .  |  core bottom
 ```
+
+Interior wall torches sit higher, at `y = 2`, on the back wall (`x = ±1`, `z = -2`) and the side
+walls (`x = ±2`, `z = 0`), so nothing hangs directly over a container.
 
 The protected zone spans `y = -core-depth .. clear-height-1` (default `y = -3 .. 2`) and
 `x, z = -1 .. 1`. The world spawn is set one block above the top core layer, on the arrival floor.
@@ -114,10 +143,39 @@ Everything is config-driven; no code change is needed.
 | `spawn-zone.beds` | `1` | Beds placed in the house (1–4). |
 | `spawn-zone.chests` | `1` | Chests placed in the house (1–4). |
 | `spawn-zone.manage-spawn-radius` | `true` | Pin the `respawn_radius` game rule to `0` so joins land on the core. |
+| `spawn-kit.house.furnishings.anvil` | `true` | Place the anvil on the back wall. |
+| `spawn-kit.house.furnishings.furnace` | `true` | Place the (unlit) furnace against the east wall. |
+| `spawn-kit.house.furnishings.lodestone` | `true` | Place the lodestone in the north-east ring cell (for testing waypoint plugins). |
+| `spawn-kit.house.furnishings.crafting-table` | `true` | Place the crafting table on the back wall. |
+| `spawn-kit.house.furnishings.exterior-banners` | `true` | Place the two wall banners on the south wall's outer face. |
+| `spawn-kit.house.furnishings.exterior-torches` | `true` | Place the two wall torches beside the doorway. |
+| `spawn-kit.house.furnishings.banners.left` | `WHITE` | Dye colour of the banner to the left of the door (west, seen from outside). |
+| `spawn-kit.house.furnishings.banners.right` | `RED` | Dye colour of the banner to the right of the door (east). |
+| `spawn-kit.house.furnishings.extras` | `[]` | Optional single-block utilities placed in free ring cells. |
 
 The house is always at least 3 blocks of interior height, symmetric about spawn, one block wider
 than the arrival space per `margin` step, with a closed wall/roof shell except for the door, and
-lit by wall torches so hostile mobs cannot spawn inside while it is intact.
+lit by wall torches so hostile mobs cannot spawn inside while it is intact. Nothing is ever placed
+inside the protected zone, on the doorway column or in the walkable route to the door; the anvil
+rests on the floor, the chest has air above it, and every container keeps a reachable face. The
+plank doorstep is flush with the house floor; when the ground outside is lower, up to three plank
+steps are built down to it, and when it is higher a walkable approach is cleared (only replaceable
+blocks are removed).
+
+#### `extras`
+
+`extras` accepts only a fixed allow-list of harmless single-block utilities:
+
+```
+SMITHING_TABLE, GRINDSTONE, STONECUTTER, CARTOGRAPHY_TABLE, LOOM, BARREL, ENDER_CHEST,
+FLETCHING_TABLE, COMPOSTER, LECTERN, JUKEBOX, BREWING_STAND, RESPAWN_ANCHOR
+```
+
+Chests and shulker boxes are excluded so an extra can never be confused with the issued supply
+chest (`BARREL` and `ENDER_CHEST` are deliberately allowed); gravity blocks other than the anvil,
+redstone, fluids and blocks needing special placement are excluded too. An unknown or disallowed
+name is skipped with a single warning and never an error. Extras fill the free ring cells; if there
+are more than fit, as many as fit are placed and one line is logged.
 
 ## Server-provided configuration
 
@@ -142,6 +200,17 @@ spawn-kit:
     name: "World Spawn"
   house:
     enabled: false
+    furnishings:
+      anvil: true
+      furnace: true
+      lodestone: true
+      crafting-table: true
+      exterior-banners: true
+      exterior-torches: true
+      banners:
+        left: WHITE
+        right: RED
+      extras: []
     chest:
       enabled: false
       items: []
@@ -260,6 +329,14 @@ increasing backoff and log only when the reason changes.
   layout. Add the `supplies` argument only if a new chest should be handed out:
   - `/spawnkit build confirm` — new layout; an existing chest keeps its contents.
   - `/spawnkit build confirm supplies` — new layout and another set of configured items.
+- A world built with the **1.2.x layout (layout version 2)** is **not** rebuilt automatically,
+  because players may have changed the house. On enable the plugin logs once that an upgrade is
+  available. Running `/spawnkit build confirm` in that world performs an **additive upgrade**: it
+  adds each new furnishing only where the target cell is air or a replaceable natural block and its
+  support exists, never replaces or removes an existing block, never touches an existing chest's
+  contents, and skips (and logs) any piece whose cell is occupied. The record is moved to layout
+  version 3 afterwards, so a second run is a no-op apart from retrying pieces that were skipped.
+  `supplies` keeps its meaning: it adds another set of configured items to an existing chest.
 - A world that is mid-build (an interrupted reservation) refuses to build again until the record is
   reviewed, exactly as before. A build that this instance is *still running* is never reported as an
   interruption.
@@ -290,9 +367,11 @@ disabling the plugin.
 2. **Nothing else in `server.properties`** is required. The plugin manages `respawn_radius` itself
    and restores the previous value when `spawn-zone.manage-spawn-radius` is set to false.
 3. **Existing test world:** run `/spawnkit build confirm` (console or an operator) to place the new
-   layout without handing out new supplies. If the old 1.1.x shelter is still standing where the new
-   footprint goes, clear it first: the build refuses a footprint that intersects non-natural blocks
-   and says so in the log.
+   layout without handing out new supplies. On a 1.2.x world this is the **additive upgrade** that
+   adds the anvil, furnace, lodestone, banners, exterior torches and doorstep (and leaves anything
+   the players changed in place); the log lists every piece it added and every piece it skipped. If
+   the old 1.1.x shelter is still standing where the new footprint goes, clear it first: the build
+   refuses a footprint that intersects non-natural blocks and says so in the log.
 4. **Fresh world resets:** keep clearing `plugins/AwepeepsSpawnKit/issued-kits.yml` after deleting
    the world directories.
 
@@ -358,4 +437,28 @@ Requires JDK 25. Run:
 bash ./gradlew --no-daemon clean build
 ```
 
-The reproducible jar is written to `build/libs/awepeeps-spawn-kit-1.2.1.jar`.
+The reproducible jar is written to `build/libs/awepeeps-spawn-kit-1.3.0.jar`.
+
+## Behaviour changes in 1.3.0
+
+- **New default house layout.** The ring between the protected core and the walls is furnished: the
+  anvil, crafting table and chest along the back (north) wall, an (unlit) furnace against the east
+  wall, the bed against the west wall and a lodestone in the north-east corner. Interior wall
+  torches now hang at `y = 2` on the back and side walls.
+- **Exterior decorations.** Wall torches at head height on each side of the doorway and white/red
+  wall banners to the left and right of the door (seen from outside), on the outer face of the south
+  wall. The lodestone and the banners are real blocks so waypoint plugins can be tested against
+  them.
+- **Entry steps.** The plank doorstep is kept; when the ground outside the door is lower, up to
+  three plank steps are built down to it, and when it is higher a walkable approach is cleared.
+  Non-natural blocks are never destroyed for a step.
+- **Configurable furnishings.** A new `spawn-kit.house.furnishings` section toggles each piece and
+  takes optional `extras` from a fixed allow-list, plus configurable banner colours. Existing
+  configs without the section get the new defaults.
+- **Layout version 3 and additive upgrades.** A fresh world gets the full new layout automatically.
+  A 1.2.x world (layout version 2) is not rebuilt automatically; `/spawnkit build confirm` upgrades
+  it additively and logs what it added and skipped. 1.1.x worlds keep their manual-migration
+  behaviour.
+- The protected zone, the issuance-record-before-build guarantee, asynchronous chunk loading with
+  tickets released on every path, bounded main-thread batches, and the "house is never repaired or
+  protected" rule are all unchanged.

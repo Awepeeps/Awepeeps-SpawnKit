@@ -50,17 +50,31 @@ public final class AwepeepsSpawnKit extends JavaPlugin {
    * control as well.
    */
   private SpawnZoneLayout loadLayout() {
+    SpawnKitFurnishings furnishings = loadFurnishings();
     try {
       return new SpawnZoneLayout(
           bounded("spawn-zone.core-depth", 3, SpawnZoneLayout::clampCoreDepth),
           bounded("spawn-zone.clear-height", 3, SpawnZoneLayout::clampClearHeight),
           bounded("spawn-zone.margin", 1, SpawnZoneLayout::clampMargin),
           bounded("spawn-zone.beds", 1, SpawnZoneLayout::clampBeds),
-          bounded("spawn-zone.chests", 1, SpawnZoneLayout::clampChests));
+          bounded("spawn-zone.chests", 1, SpawnZoneLayout::clampChests),
+          furnishings);
     } catch (RuntimeException error) {
       getLogger().severe("Spawn Kit spawn-zone dimensions could not be read ("
           + error.getMessage() + "); using the documented defaults.");
       return SpawnZoneLayout.defaults();
+    }
+  }
+
+  private SpawnKitFurnishings loadFurnishings() {
+    try {
+      return SpawnKitFurnishings.parse(
+          getConfig().getConfigurationSection("spawn-kit.house.furnishings"),
+          message -> getLogger().warning(message));
+    } catch (RuntimeException error) {
+      getLogger().warning("Spawn Kit house furnishings could not be read ("
+          + error.getMessage() + "); using the defaults.");
+      return SpawnKitFurnishings.defaults();
     }
   }
 
