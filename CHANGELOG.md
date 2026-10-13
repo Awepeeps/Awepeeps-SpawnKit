@@ -1,5 +1,49 @@
 # Changelog
 
+## 1.3.1
+
+Fixes a fresh-world defect that could leave a brand-new world with **no protected core and no
+house at all**.
+
+- **Fixed: a fresh world whose spawn is in a forest built nothing.** The zone scan classified
+  several blocks that world generation places in ordinary forests as "not natural terrain, a
+  container or a structure", so the zone build refused the site. On the reported world the offending
+  blocks were `LEAF_LITTER` (31 cells) and `BUSH` (2 cells) — ground cover added in recent Minecraft
+  versions that the old hand-written material lists missed — and, on other forest worlds, anywhere a
+  generated `BEE_NEST` sat on a trunk. The classifier now prefers the vanilla block tags (`#leaves`,
+  `#logs`, `#saplings`, `#flowers`, `#dirt`, the overworld base-stone tag, `#sand`, `#snow`, `#ice`,
+  `#moss_blocks`, `#replaceable_by_trees`, `#cave_vines`) and falls back to explicit sets and name
+  patterns, so it keeps working for blocks a future version adds. Leaf litter, bushes, tall flowers,
+  dry grass, every tree variant (logs, leaves, vines, cocoa and a generated bee nest) and the other
+  surface ground cover are now clearable natural terrain; player-made and structure blocks are still
+  refused (a **crafted** `BEEHIVE` is refused, a generated `BEE_NEST` is cleared with its tree).
+- **New: bounded tree clearing that leaves no floating canopy.** When a tree trunk stands inside the
+  footprint, its connected logs, leaves, vines, cocoa and generated bee nest are removed out to a
+  bounded radius (`4` blocks beyond the footprint) and height (`12` blocks above the roof), capped at
+  `512` blocks (the build completes and logs any leftover if the cap is hit). Trees entirely outside
+  the footprint are untouched.
+- **New: actionable deferral diagnostics.** The message now names the offending block types with an
+  example position each, e.g.
+  `Spawn zone build deferred: 3 block(s) in the footprint are not natural terrain: LEAF_LITTER at
+  (x, y, z), BUSH at (x, y, z).` A refusal caused by generated terrain is logged once in full and the
+  silent timer retry stops, telling the operator to clear the site or run the build command;
+  transient refusals (chunks not loaded yet) still retry. While a zone is deferred, a one-time
+  warning now says the world spawn and the vanilla `respawn_radius` are still in use and new players
+  are not being placed on a spawn pad.
+- **New: `/spawnkit build confirm force [items] [supplies]`** for a genuinely blocked site. `force`
+  builds even when the footprint contains non-natural blocks, replacing them, but still never
+  destroys a container that holds items or any other block entity that carries contents; `force
+  items` is the explicit second opt-in that replaces those too. The plain command never does this.
+- **Fixed: `/spawnkit build confirm` on a world already at the current layout** no longer reports a
+  spurious refusal for the house the plugin itself built; it reports that the layout is already
+  current and nothing was changed (still retrying any previously skipped additive piece and
+  reporting what it added or skipped).
+- Test suite grows from 46 to 64 tests: a classifier table over the exact block list of the failing
+  footprint and the other generated surface blocks, a player/structure refusal list, a bounded-tree
+  clearing and build-volume scan over an in-memory model of the failing site, refusal messages that
+  name the block and position, forced-build behaviour, and the deterministic-deferral and
+  already-current policies.
+
 ## 1.3.0
 
 Furnished house layout, published for the owner's waypoint-plugin tests. The protected zone and

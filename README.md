@@ -294,26 +294,82 @@ The house is built around the world spawn, not searched for. The plugin:
 
 - chooses the floor level from the terrain under the whole house footprint (levelling height
   variations of up to four blocks with a cobblestone foundation),
-- clears only whitelisted natural vegetation, trees and snow in the footprint, and never crops on
-  farmland (those refuse the site),
+- clears only natural vegetation, trees and snow in the footprint, and never crops on farmland or
+  anything a player made (those refuse the site),
 - fills a foundation so nothing floats, and raises the floor above any water surface,
 - sets the world spawn so its Y is the arrival floor (the top of the core).
 
-Building is refused and deferred with a clear reason when the footprint intersects player-placed
+### What counts as natural terrain
+
+Classification prefers the vanilla block tags (`#leaves`, `#logs`, `#saplings`, `#flowers`, `#dirt`,
+the overworld base-stone tag, `#sand`, `#snow`, `#ice`, `#moss_blocks`, `#replaceable_by_trees`,
+`#cave_vines`) and falls back to explicit material sets and name patterns, so it keeps working for
+blocks a future Minecraft version adds. Everything world generation places on or near the surface of
+an unmodified overworld chunk is accepted:
+
+- **Clearable when it is vegetation, a tree or ground cover** inside the build volume: every leaf
+  and log variant (including pale oak, mangrove and cherry, and their unstripped forms), saplings,
+  flowers and tall flowers, grass and fern variants, dry grass, dead bushes, mushrooms, pumpkins,
+  melons, sugar cane, bamboo, cactus, berry bushes, vines (`#cave_vines` included), glow lichen,
+  moss and pale-moss carpet, leaf litter, bushes, pink petals, wildflowers, firefly bushes, hanging
+  roots, dripleaves, cocoa and a **generated bee nest** (a generated bee nest goes with its tree like
+  any other attachment; a crafted `BEEHIVE` is refused).
+- **Acceptable as foundation when it is solid ground**: dirt and its variants, grass, podzol,
+  mycelium, mud, clay, sand, gravel, snow and ice, stone and its overworld base variants, deepslate,
+  ores, sandstone, terracotta, moss and amethyst.
+
+A block of any other type is a **refusal**: containers other than a generated bee nest (chests,
+barrels, furnaces, hoppers, shulker boxes, ...), beds, doors, signs, rails, torches and redstone
+components, crafted or processed blocks (planks, stairs, slabs, fences, glass, wool, bricks,
+**stripped** logs, crops on farmland), spawners, and blocks left by a generated structure (which are
+not natural terrain and so are refused). When in doubt between "natural" and "player-made" for a
+block type generation never places on the surface, the plugin refuses the site.
+
+### Trees and the build volume
+
+The plugin clears the whole build volume: every vegetation and tree cell in the footprint and door
+columns, from the world floor to the top of its column, plus the entire connected tree when a trunk
+stands inside the footprint — its logs, leaves, vines, cocoa and any generated bee nest — out to a
+bounded radius of `4` blocks beyond the footprint and `12` blocks above the roof. Trees entirely
+outside the footprint are left alone. The walk is capped at `512` blocks; if the cap is hit the build
+still completes and the leftover is logged. This guarantees no floating canopy is left hanging over
+or beside the house.
+
+### Refusal and retry behaviour
+
+Building is refused and deferred with a clear reason when the footprint intersects non-natural
 blocks, containers or a generated structure, when there is lava beneath, when the column is void,
 when the terrain is too uneven, or when there is not enough headroom. The protected core and the
-foundation the plugin filled beneath it are ignored by that check, so a second pass — the
-automatic house, or `/spawnkit build confirm` — is not refused for blocks the plugin placed itself.
-Non-natural blocks are never
-destroyed, and that includes player-planted crops: farmland and crops are not "natural vegetation",
-so a farm in the footprint refuses the site rather than being cleared. Deferrals retry with
-increasing backoff and log only when the reason changes.
+foundation the plugin filled beneath it are ignored by that check, so a second pass — the automatic
+house, or `/spawnkit build confirm` — is not refused for blocks the plugin placed itself.
 
-> Trees are cleared (trunks and leaves) because a spawn inside a forest is common. A structure built
-> purely out of unprocessed logs is therefore indistinguishable from a tree and would be cleared;
-> anything else man-made (planks, cobblestone, containers, doors, signs, rails, redstone) refuses the
-> site. This is unchanged from 1.1.x and is called out here because it is the one case where a
-> player-built block can be removed.
+A refusal caused by **generated terrain** (everything above except "spawn chunks were not loaded")
+is deterministic: the message names the stage, the number of offending blocks and the distinct block
+types with an example position each, e.g.
+
+```
+Spawn zone build deferred: 3 block(s) in the footprint are not natural terrain: LEAF_LITTER at
+(x, y, z), BUSH at (x, y, z).
+```
+
+It is logged once in full and the silent timer retry stops, telling the operator to clear the site or
+run the build command. A **transient** refusal (chunks not loaded yet) keeps retrying with increasing
+backoff and logs only when the reason changes. While a zone is deferred the world spawn and the
+vanilla `respawn_radius` remain in use, and a one-time warning says that new players are not being
+placed on a spawn pad yet.
+
+### Forcing a blocked site
+
+`/spawnkit build confirm force` builds even when the footprint contains non-natural blocks, replacing
+them. It still refuses, and never destroys, a container that holds items or any other block entity
+that carries contents. `/spawnkit build confirm force items` is the explicit second opt-in that also
+replaces those, with the obvious risk that their contents are lost. `supplies` combines with either.
+The plain `/spawnkit build confirm` never replaces non-natural blocks.
+
+> Trees are cleared (trunks, leaves and their attachments) because a spawn inside a forest is common,
+> and the owner accepts that the trees at spawn are removed. A structure built purely out of
+> unprocessed logs is indistinguishable from a tree and would be cleared; anything else man-made
+> (planks, cobblestone, containers, doors, signs, rails, redstone) refuses the site.
 
 ## Building, idempotency and upgrades
 
@@ -337,6 +393,9 @@ increasing backoff and log only when the reason changes.
   contents, and skips (and logs) any piece whose cell is occupied. The record is moved to layout
   version 3 afterwards, so a second run is a no-op apart from retrying pieces that were skipped.
   `supplies` keeps its meaning: it adds another set of configured items to an existing chest.
+- A world already at the **current layout version** is reported as already current by
+  `/spawnkit build confirm`; nothing structural is changed. The command still retries any additive
+  piece that was skipped earlier and reports what it added and skipped.
 - A world that is mid-build (an interrupted reservation) refuses to build again until the record is
   reviewed, exactly as before. A build that this instance is *still running* is never reported as an
   interruption.
@@ -437,7 +496,7 @@ Requires JDK 25. Run:
 bash ./gradlew --no-daemon clean build
 ```
 
-The reproducible jar is written to `build/libs/awepeeps-spawn-kit-1.3.0.jar`.
+The reproducible jar is written to `build/libs/awepeeps-spawn-kit-1.3.1.jar`.
 
 ## Behaviour changes in 1.3.0
 
@@ -462,3 +521,26 @@ The reproducible jar is written to `build/libs/awepeeps-spawn-kit-1.3.0.jar`.
 - The protected zone, the issuance-record-before-build guarantee, asynchronous chunk loading with
   tickets released on every path, bounded main-thread batches, and the "house is never repaired or
   protected" rule are all unchanged.
+
+## Behaviour changes in 1.3.1
+
+- **Fixed: a fresh world whose spawn is in a forest built nothing.** Blocks that world generation
+  places in ordinary forests (leaf litter and bushes, and a generated bee nest on a trunk) were
+  classified as "non-natural blocks, containers or a structure", so the zone build refused the site
+  and — after one log line — retried silently forever, leaving no protected core, no house, no chest
+  and the vanilla `respawn_radius`. Classification now prefers the vanilla block tags with explicit
+  fallbacks, so generated surface terrain is accepted (see
+  [What counts as natural terrain](#what-counts-as-natural-terrain)).
+- **New: bounded tree clearing.** A tree whose trunk stands inside the footprint is removed as a
+  whole (logs, leaves, vines, cocoa, generated bee nest) within a bounded radius and height, so no
+  floating canopy is left over the house; trees entirely outside the footprint are untouched.
+- **New: actionable deferral messages and a stopped timer.** A deterministic refusal names the
+  offending block types with example positions, is logged once in full, and stops retrying; only
+  transient causes keep retrying. While a zone is deferred, a one-time warning says arrivals are not
+  on a spawn pad yet.
+- **New: `force` (and `force items`) on `/spawnkit build confirm`** to build on a genuinely blocked
+  site without ever silently destroying an item-holding container.
+- **Fixed: `/spawnkit build confirm` on a world already at the current layout** reports that nothing
+  was changed instead of refusing the site for the house the plugin built.
+- The protected zone, the pre-build issuance record, ticket release on every path, bounded batches,
+  the never-repair-the-house rule and the additive upgrade are unchanged.

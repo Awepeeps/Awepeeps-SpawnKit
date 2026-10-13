@@ -8,7 +8,7 @@ softdepend: [BlueMap]
 commands:
   spawnkit:
     description: Build or migrate the protected spawn layout for the current world.
-    usage: /spawnkit build confirm [supplies]
+    usage: /spawnkit build confirm [force] [items] [supplies]
     permission: awepeepsspawnkit.admin
 permissions:
   awepeepsspawnkit.admin:
