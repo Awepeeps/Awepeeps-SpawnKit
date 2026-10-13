@@ -599,3 +599,9 @@ The reproducible jar is written to `build/libs/awepeeps-spawn-kit-1.3.3.jar`.
   kit window is active.
 
 This is a source-only change: it has not been run on a live server yet.
+
+## Repository docs
+
+- [`AGENTS.md`](AGENTS.md) — repository-wide guidance for agents working on this plugin.
+- [`.agents/skills/spawnkit-spawn-layout-change/SKILL.md`](.agents/skills/spawnkit-spawn-layout-change/SKILL.md)
+  — the build-and-test workflow for changing the spawn layout.
