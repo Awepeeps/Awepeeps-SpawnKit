@@ -17,7 +17,11 @@ interface BlockReader {
 
   Material blockAt(int x, int y, int z);
 
-  /** The top of the column counting everything that blocks motion, leaves included. */
+  /**
+   * The top of the column counting every non-air block, ground cover included. Used only to bound
+   * the clearing scan, so it must reach leaf litter, bushes and short grass that do not block
+   * motion.
+   */
   int topY(int blockX, int blockZ);
 
   /** The top of the column ignoring leaves (used to find the ground under a canopy). */

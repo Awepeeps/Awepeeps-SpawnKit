@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.3.3
+
+Fix for ground cover left on the arrival cells by the initial build. This is a source-only change: it
+has not been run on a live server yet.
+
+- **Fixed: exposed ground cover on the arrival cells was not cleared by the initial build.** The
+  clearing scan clears "clearable vegetation" up to the top of each column, but the production reader
+  read the top from the server's `MOTION_BLOCKING` heightmap. Leaf litter, bushes and short grass do
+  not block motion, so a cell of cover one block above the grass (for example on flat grass at
+  `y = 66` with the grass at `y = 65`) lay above the bound and was never scheduled for clearing; the
+  periodic core repair removed it later, once the chunks loaded. The reader now uses `WORLD_SURFACE`
+  (the highest non-air block) for that bound, so the initial zone and house passes clear the exposed
+  cover themselves and no self-heal is needed. The floor selection and the ground lookup
+  (`MOTION_BLOCKING_NO_LEAVES`) are unchanged, and nothing but approved vegetation is ever cleared:
+  man-made blocks and item-holding containers are still preserved.
+- **Tests: the production heightmap choice is pinned, so the mismatch cannot ship unnoticed again.**
+  The existing in-memory test reader already counted every non-air block and so hid the production
+  divergence. New tests exercise the real `WorldBlockReader` through a small fake world, compose the
+  two real passes (zone then house) and assert an intact protected core and an all-air arrival space
+  with no repair, and add negative controls (an item-holding container; a non-vegetation block above
+  the cleared cover) and a bounds check. Test suite grows from 75 to 85 tests.
+- **Wording: deferral and house-await messages scoped.** The deterministic-refusal advice now tells
+  the operator to clear the site and run the build command while the kit window is active, and notes
+  that `force` is only accepted on a fresh zone, not on an additive upgrade (which rejects it). The
+  "zone built, house not yet" reply now says the automatic house pass runs on its next cycle while the
+  kit window is active.
+
 ## 1.3.2
 
 Review fixes for 1.3.1. This is a source-only change: it has not been run on a live server yet.

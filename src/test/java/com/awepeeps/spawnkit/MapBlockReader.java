@@ -8,7 +8,9 @@ import org.bukkit.Material;
 
 /**
  * An in-memory {@link BlockReader} for scan tests: a hand-built block map with the same heightmap
- * semantics the builder relies on (leaves are excluded from the ground lookup).
+ * semantics the builder relies on. {@link #topY} is the highest non-air block (the production
+ * {@link WorldBlockReader} uses {@code HeightMap.WORLD_SURFACE}); {@link #surfaceY} excludes leaves
+ * (the production ground lookup).
  */
 final class MapBlockReader implements BlockReader {
   private final Map<Long, Material> blocks = new HashMap<>();

@@ -352,8 +352,9 @@ Spawn zone build deferred: 3 block(s) in the footprint are not natural terrain: 
 (x, y, z), BUSH at (x, y, z).
 ```
 
-It is logged once in full and the silent timer retry stops, telling the operator to clear the site or
-run the build command. A **transient** refusal (chunks not loaded yet) keeps retrying with increasing
+It is logged once in full and the silent timer retry stops, telling the operator to clear the site and
+run the build command while the kit window is active (`force` is accepted only on a fresh zone, never
+on an additive upgrade). A **transient** refusal (chunks not loaded yet) keeps retrying with increasing
 backoff and logs only when the reason changes. While a zone is deferred the world spawn and the
 vanilla `respawn_radius` remain in use, and a one-time warning says that new players are not being
 placed on a spawn pad yet.
@@ -405,7 +406,8 @@ chest.
   piece that was skipped earlier and reports what it added and skipped. While the house pass has not
   recorded completion (the zone is built but the house has not run yet, or it was deferred), the
   command leaves the world to the automatic house build instead of running the additive pass over
-  the bare zone; it reports that nothing was changed and the house pass resumes on its next cycle.
+  the bare zone; it reports that nothing was changed and the house pass resumes on its next cycle
+  while the kit window is active.
 - A world that is mid-build (an interrupted reservation) refuses to build again until the record is
   reviewed, exactly as before. A build that this instance is *still running* is never reported as an
   interruption.
@@ -506,7 +508,7 @@ Requires JDK 25. Run:
 bash ./gradlew --no-daemon clean build
 ```
 
-The reproducible jar is written to `build/libs/awepeeps-spawn-kit-1.3.2.jar`.
+The reproducible jar is written to `build/libs/awepeeps-spawn-kit-1.3.3.jar`.
 
 ## Behaviour changes in 1.3.0
 
@@ -570,3 +572,30 @@ The reproducible jar is written to `build/libs/awepeeps-spawn-kit-1.3.2.jar`.
   zone and marked the world complete, so the house shell was never built. The command now leaves such
   a world to its automatic house build and reports that nothing was changed, so the two writers never
   overlap and the house is not lost.
+
+## Behaviour changes in 1.3.3
+
+- **Fixed: exposed ground cover on the arrival cells was not cleared by the initial build.** The
+  clearing scan is bounded by the top of each column, and that bound was read from the server's
+  `MOTION_BLOCKING` heightmap. Leaf litter, bushes and short grass do not block motion, so cover
+  sitting one block above the grass (for example on flat grass at `y = 66` when the grass is `y = 65`)
+  was above the bound and never scheduled for clearing. The periodic core repair then removed it
+  later, once the chunks loaded, which is the "repaired N protected spawn block(s)" line an owner saw
+  once. The bound now counts every non-air block (`WORLD_SURFACE`), so the initial zone and house
+  passes clear the exposed cover themselves. The floor selection and the ground lookup
+  (`MOTION_BLOCKING_NO_LEAVES`) are unchanged, and the fix still clears nothing but approved
+  vegetation: man-made blocks and item-holding containers are preserved, and the clearing stays inside
+  the same bounded build columns.
+- **Tests: the heightmap mismatch can no longer hide behind the test double.** The in-memory reader
+  used by the existing tests already counted every non-air block, so it could not catch the
+  production reader asking for the wrong heightmap. New tests drive the real `WorldBlockReader`
+  against a small fake world and compose the two real passes (zone, then house) to assert the
+  protected core and an all-air arrival space with no repair, plus negative controls for a container
+  and for a non-vegetation block above the cleared cover. The test suite grows from 75 to 85 tests.
+- **Wording: the deferral and house-await messages are scoped.** The deterministic-refusal advice now
+  says to clear the site and run the build command while the kit window is active, and notes that
+  `force` is only accepted on a fresh zone, never on an additive upgrade (which rejects it). The
+  "zone built, house not yet" reply now says the automatic house pass runs on its next cycle while the
+  kit window is active.
+
+This is a source-only change: it has not been run on a live server yet.

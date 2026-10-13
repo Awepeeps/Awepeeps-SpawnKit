@@ -38,7 +38,10 @@ final class WorldBlockReader implements BlockReader {
 
   @Override
   public int topY(int blockX, int blockZ) {
-    return world.getHighestBlockYAt(blockX, blockZ, HeightMap.MOTION_BLOCKING);
+    // The clearing scan counts every non-air block, ground cover included: leaf litter, bushes and
+    // short grass do not block motion, so MOTION_BLOCKING would stop the scan below them and leave
+    // exposed cover on the ground the player stands on. WORLD_SURFACE is the highest non-air block.
+    return world.getHighestBlockYAt(blockX, blockZ, HeightMap.WORLD_SURFACE);
   }
 
   @Override
