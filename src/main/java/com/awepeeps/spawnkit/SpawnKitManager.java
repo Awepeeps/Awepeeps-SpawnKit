@@ -495,8 +495,9 @@ final class SpawnKitManager {
             + " players are not being placed on a spawn pad until the site is built.");
       }
       logDeferredOnce(worldId, "Spawn " + kind + " build deferred: " + defect
-          + " This is the terrain as generated, so it will not change by waiting. Clear the site,"
-          + " or run '/spawnkit build confirm' (add 'force' to replace the non-natural blocks).");
+          + " This is the terrain as generated, so it will not change by waiting. Clear the site"
+          + " and run '/spawnkit build confirm' while the kit window is active; 'force' is only"
+          + " accepted on a fresh zone, not on an additive upgrade.");
     } else {
       retryLater(worldId);
       logDeferredOnce(worldId, "Spawn " + kind + " build deferred: " + defect);
@@ -600,7 +601,7 @@ final class SpawnKitManager {
       // world complete, leaving the wall/floor/roof shell unbuilt. The command has already cleared
       // any deferral, so the house pass resumes on its next cycle and keeps the durable reservation.
       return "This world has its protected spawn zone but not its house yet; the automatic house"
-          + " build will run on the next cycle. Nothing was changed.";
+          + " build will run on its next cycle while the kit window is active. Nothing was changed.";
     }
     int sx = store.getInt(worldPath + ".spawn-x");
     int sy = store.getInt(worldPath + ".spawn-y");
