@@ -143,6 +143,15 @@ Everything is config-driven; no code change is needed.
 | `spawn-zone.beds` | `1` | Beds placed in the house (1–4). |
 | `spawn-zone.chests` | `1` | Chests placed in the house (1–4). |
 | `spawn-zone.manage-spawn-radius` | `true` | Pin the `respawn_radius` game rule to `0` so joins land on the core. |
+| `spawn-kit.enabled` | `false` | Enable the test-only kit (house, starter chest, BlueMap marker); independent of the protected zone. |
+| `spawn-kit.starts-on` | `""` (empty) | Start of the inclusive test window, an ISO date (`YYYY-MM-DD`). The kit never activates without a valid window. |
+| `spawn-kit.expires-on` | `""` (empty) | End of the inclusive test window, an ISO date; the kit stops at local midnight after this date. |
+| `spawn-kit.timezone` | `""` (empty) | IANA zone name the window is evaluated in (for example `UTC`); the kit never activates while this is empty. |
+| `spawn-kit.spawn-marker.enabled` | `false` | Publish a named BlueMap POI at the world spawn while BlueMap is installed. |
+| `spawn-kit.spawn-marker.name` | `"World Spawn"` | Name of the published BlueMap marker. |
+| `spawn-kit.house.enabled` | `false` | Build the destructible, furnished house while the kit is active; the house is never protected or rebuilt. |
+| `spawn-kit.house.chest.enabled` | `false` | Place the starter supply chest (contents from `spawn-kit.house.chest.items`); issued on a fresh build or only via the `supplies` argument. |
+| `spawn-kit.house.chest.items` | `[]` | Bukkit `Material` names with amounts for the chest; positive integers, and all items must fit within 27 chest slots. |
 | `spawn-kit.house.furnishings.anvil` | `true` | Place the anvil on the back wall. |
 | `spawn-kit.house.furnishings.furnace` | `true` | Place the (unlit) furnace against the east wall. |
 | `spawn-kit.house.furnishings.lodestone` | `true` | Place the lodestone in the north-east ring cell (for testing waypoint plugins). |
@@ -450,158 +459,60 @@ disabling the plugin.
 > tables in the sources reviewed; only block placing/breaking are documented as blocked. This is
 > marked **unverified** because it could not be confirmed against a live 26.3 server.
 
-## Behaviour changes in 1.2.1
-
-- **Fixed: every login moved a bed-less player to world spawn.** Joins now use Paper's
-  `AsyncPlayerSpawnLocationEvent` and its `isNewPlayer()` flag, so only a first ever join is placed
-  on the core; returning players keep their logout position.
-- **Fixed: a bed or door could be placed with one half inside the arrival space.**
-  `BlockMultiPlaceEvent` now checks every placed half, not only the primary block.
-- **Fixed: entities could be placed in the arrival space.** Boats, minecarts, armour stands, end
-  crystals, item frames and paintings are now refused there.
-- **Fixed: a dispenser facing into the zone could still place its fluid or block.** The target block
-  is now derived from the dispenser's facing and refused.
-- **Fixed: crops on farmland could be cleared by a build.** Player-planted crops (wheat, carrots,
-  potatoes, beetroots, pumpkin and melon stems) are no longer treated as natural vegetation, so a
-  farm refuses the site instead of being silently destroyed.
-- **Fixed: re-issuing the layout replaced the supply chest block**, wiping whatever was stored in it.
-- **Fixed: a lucky/unlucky game-rule write could lose the original `respawn_radius`.** The rule is now
-  pinned to `0` only after the original value is durably recorded, so a failed write leaves the rule
-  alone instead of making `0` permanent.
-- **Fixed: an in-progress build was reported as an interrupted one**, telling the operator to review
-  a record that was perfectly healthy.
-- **Fixed: the periodic core check could synchronously load unloaded chunks** every cycle; it is now
-  skipped while the zone's chunks are not loaded, and repeated repairs no longer spam the log.
-- **Fixed: the BlueMap marker task could throw `NoClassDefFoundError`** when the marker was enabled
-  without BlueMap installed.
-- **Fixed: chunk tickets could be left behind** when a build was interrupted by a plugin disable;
-  they are now tracked and released on disable.
-- **Changed: out-of-range or non-numeric config values are clamped with a warning** instead of
-  disabling the plugin (and with it spawn protection). Invalid chest items now leave the chest empty
-  with a warning instead of disabling the plugin.
-- **Changed: `BlockPhysicsEvent` is no longer cancelled.** It was the only untargeted cancellation
-  and a known source of client-side ghost blocks; every way a block can enter the zone is covered by
-  a specific event, and the periodic check is the backstop.
-- **Changed: `spawn-zone.enabled: false` now also drops the recorded protection region and spawn
-  location** at runtime, and `/spawnkit build confirm` refuses to build while the zone is disabled.
-- `Plugin#getDescription()` (deprecated) replaced with `Plugin#getPluginMeta()`.
-
-## Behaviour changes in 1.2.0
-
-- The plugin now owns spawn protection through listeners instead of relying on
-  `server.properties`. It logs a startup warning when `spawn-protection` is greater than `0`.
-- The world spawn is moved to the top of the protected core and `respawn_radius` is pinned to `0`
-  (restored when disabled).
-- The old "search for a safe natural site near spawn" behaviour is gone; the layout is built around
-  the world spawn and refused/deferred if that terrain is unsuitable. The `spawn-kit.search-radius`
-  key is removed.
-- The shelter is replaced by the core layout above; the marker is now a BlueMap POI only (no
-  lodestone), so the protected core stays uniform.
-- New config sections `spawn-zone` (with `core-depth`, `clear-height`, `margin`, `beds`, `chests`,
-  `manage-spawn-radius`) and the `/spawnkit build confirm [supplies]` command.
-
 ## Build and tests
 
 Requires JDK 25. Run:
 
 ```sh
-bash ./gradlew --no-daemon clean build
+bash ./gradlew --no-daemon clean test build
 ```
 
 The reproducible jar is written to `build/libs/awepeeps-spawn-kit-1.3.3.jar`.
 
-## Behaviour changes in 1.3.0
+## Version history
 
-- **New default house layout.** The ring between the protected core and the walls is furnished: the
-  anvil, crafting table and chest along the back (north) wall, an (unlit) furnace against the east
-  wall, the bed against the west wall and a lodestone in the north-east corner. Interior wall
-  torches now hang at `y = 2` on the back and side walls.
-- **Exterior decorations.** Wall torches at head height on each side of the doorway and white/red
-  wall banners to the left and right of the door (seen from outside), on the outer face of the south
-  wall. The lodestone and the banners are real blocks so waypoint plugins can be tested against
-  them.
-- **Entry steps.** The plank doorstep is kept; when the ground outside the door is lower, up to
-  three plank steps are built down to it, and when it is higher a walkable approach is cleared.
-  Non-natural blocks are never destroyed for a step.
-- **Configurable furnishings.** A new `spawn-kit.house.furnishings` section toggles each piece and
-  takes optional `extras` from a fixed allow-list, plus configurable banner colours. Existing
-  configs without the section get the new defaults.
-- **Layout version 3 and additive upgrades.** A fresh world gets the full new layout automatically.
-  A 1.2.x world (layout version 2) is not rebuilt automatically; `/spawnkit build confirm` upgrades
-  it additively and logs what it added and skipped. 1.1.x worlds keep their manual-migration
-  behaviour.
-- The protected zone, the issuance-record-before-build guarantee, asynchronous chunk loading with
-  tickets released on every path, bounded main-thread batches, and the "house is never repaired or
-  protected" rule are all unchanged.
+The behaviour changes of every release live in
+[`CHANGELOG.md`](CHANGELOG.md), which is the single copy of the release
+history.
 
-## Behaviour changes in 1.3.1
+## Install
 
-- **Fixed: a fresh world whose spawn is in a forest built nothing.** Blocks that world generation
-  places in ordinary forests (leaf litter and bushes, and a generated bee nest on a trunk) were
-  classified as "non-natural blocks, containers or a structure", so the zone build refused the site
-  and — after one log line — retried silently forever, leaving no protected core, no house, no chest
-  and the vanilla `respawn_radius`. Classification now prefers the vanilla block tags with explicit
-  fallbacks, so generated surface terrain is accepted (see
-  [What counts as natural terrain](#what-counts-as-natural-terrain)).
-- **New: bounded tree clearing.** A tree whose trunk stands inside the footprint is removed as a
-  whole (logs, leaves, vines, cocoa, generated bee nest) within a bounded radius and height, so no
-  floating canopy is left over the house; trees entirely outside the footprint are untouched.
-- **New: actionable deferral messages and a stopped timer.** A deterministic refusal names the
-  offending block types with example positions, is logged once in full, and stops retrying; only
-  transient causes keep retrying. While a zone is deferred, a one-time warning says arrivals are not
-  on a spawn pad yet.
-- **New: `force` (and `force items`) on `/spawnkit build confirm`** to build on a genuinely blocked
-  site without ever silently destroying an item-holding container.
-- **Fixed: `/spawnkit build confirm` on a world already at the current layout** reports that nothing
-  was changed instead of refusing the site for the house the plugin built.
-- The protected zone, the pre-build issuance record, ticket release on every path, bounded batches,
-  the never-repair-the-house rule and the additive upgrade are unchanged.
+Spawn Kit is **test-only**: it belongs on disposable test instances and is
+never part of a live season's install order.
 
-## Behaviour changes in 1.3.2
+1. Drop the built jar (see [Build and tests](#build-and-tests) for the output
+   path) into the server's `plugins/` directory.
+2. Set `spawn-protection=0` in `server.properties` — the plugin owns spawn
+   protection itself and warns at startup while the vanilla value is non-zero
+   (see [What the deployer must change](#what-the-deployer-must-change)).
+3. Start the server; the plugin creates `plugins/AwepeepsSpawnKit/config.yml`.
+   Edit it as desired and restart (or run `/spawnkit build confirm`) to apply
+   (see [Server-provided configuration](#server-provided-configuration)).
+4. On a fresh world the protected zone — and the house and chest while the
+   test window is active — builds automatically at the world spawn.
 
-- **Fixed: a forced build on a site that was also uneven or without headroom aborted.** `force`
-  cleared the occupancy defect and the build then continued with no floor level, which threw instead
-  of building or refusing. `force` now bypasses occupancy only while every shape, height and
-  world-bound check still holds; otherwise the site is refused with that explicit deterministic
-  reason and no block changes are planned. Without `force` the message is unchanged.
-- **Fixed: `force`/`items` were silently ignored on an additive upgrade.** They are now rejected with
-  a clear message before any block change or supply, because an additive upgrade never overwrites an
-  existing house or chest. They remain valid for a fresh blocked site.
-- **Fixed: an operator build could race the automatic house pass.** `/spawnkit build confirm` on a
-  zone-built world whose house pass had not recorded completion ran the additive pass over the bare
-  zone and marked the world complete, so the house shell was never built. The command now leaves such
-  a world to its automatic house build and reports that nothing was changed, so the two writers never
-  overlap and the house is not lost.
+## Rollback
 
-## Behaviour changes in 1.3.3
+Rollback is removing or downgrading the jar on a test instance: stop the
+server, replace the plugin jar with the previously reviewed build from a
+verified backup (or delete the jar outright), and restart. When the plugin
+disables cleanly it restores the `respawn_radius` game rule it had pinned to
+its original value; check the rule once after rolling back if the server was
+stopped without a clean disable. For a disposable test world it is usually
+simpler to reset instead: remove the world directories and
+`plugins/AwepeepsSpawnKit/issued-kits.yml` and let the plugin rebuild.
 
-- **Fixed: exposed ground cover on the arrival cells was not cleared by the initial build.** The
-  clearing scan is bounded by the top of each column, and that bound was read from the server's
-  `MOTION_BLOCKING` heightmap. Leaf litter, bushes and short grass do not block motion, so cover
-  sitting one block above the grass (for example on flat grass at `y = 66` when the grass is `y = 65`)
-  was above the bound and never scheduled for clearing. The periodic core repair then removed it
-  later, once the chunks loaded, which is the "repaired N protected spawn block(s)" line an owner saw
-  once. The bound now counts every non-air block (`WORLD_SURFACE`), so the initial zone and house
-  passes clear the exposed cover themselves. The floor selection and the ground lookup
-  (`MOTION_BLOCKING_NO_LEAVES`) are unchanged, and the fix still clears nothing but approved
-  vegetation: man-made blocks and item-holding containers are preserved, and the clearing stays inside
-  the same bounded build columns.
-- **Tests: the heightmap mismatch can no longer hide behind the test double.** The in-memory reader
-  used by the existing tests already counted every non-air block, so it could not catch the
-  production reader asking for the wrong heightmap. New tests drive the real `WorldBlockReader`
-  against a small fake world and compose the two real passes (zone, then house) to assert the
-  protected core and an all-air arrival space with no repair, plus negative controls for a container
-  and for a non-vegetation block above the cleared cover. The test suite grows from 75 to 85 tests.
-- **Wording: the deferral and house-await messages are scoped.** The deterministic-refusal advice now
-  says to clear the site and run the build command while the kit window is active, and notes that
-  `force` is only accepted on a fresh zone, never on an additive upgrade (which rejects it). The
-  "zone built, house not yet" reply now says the automatic house pass runs on its next cycle while the
-  kit window is active.
+## License
 
-This is a source-only change: it has not been run on a live server yet.
+Distributed under the [MIT license](LICENSE); copyright (c) 2026 Awepeeps
+contributors.
 
 ## Repository docs
 
 - [`AGENTS.md`](AGENTS.md) — repository-wide guidance for agents working on this plugin.
 - [`.agents/skills/spawnkit-spawn-layout-change/SKILL.md`](.agents/skills/spawnkit-spawn-layout-change/SKILL.md)
   — the build-and-test workflow for changing the spawn layout.
+- [`CHANGELOG.md`](CHANGELOG.md) — release history and per-release behaviour changes.
+- [`LICENSE`](LICENSE) — the MIT license.
+- [`SECURITY.md`](SECURITY.md) — how to report a security issue privately.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — build/test steps and pull-request expectations.
